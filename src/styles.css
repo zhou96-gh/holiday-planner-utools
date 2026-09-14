@@ -29,7 +29,7 @@ button { cursor: pointer; }
   min-height: 64px;
   padding: 10px 18px;
   display: grid;
-  grid-template-columns: minmax(170px, 1fr) auto minmax(390px, 1fr);
+  grid-template-columns: minmax(170px, 1fr) auto minmax(170px, 1fr);
   align-items: center;
   gap: 18px;
   background: #202522;
@@ -461,10 +461,10 @@ fieldset { margin: 12px 0 0; padding: 0; border: 0; }
   pointer-events: none;
 }
 
-.day-cell.manual-rest { --day-cell-background: #fff4cf; }
 .day-cell.schedule-rest { --day-cell-background: #edf7f4; }
-.day-cell.manual-work { --day-cell-background: #f2eef8; }
 .day-cell.official-holiday { --day-cell-background: #fde9e6; }
+.day-cell.manual-rest { --day-cell-background: #fff4cf; }
+.day-cell.manual-work { --day-cell-background: #f2eef8; }
 
 .day-cell.partial-rest {
   background:
@@ -651,8 +651,8 @@ dialog {
 }
 
 dialog::backdrop { background: rgba(20, 24, 22, 0.42); }
-#date-form { padding: 20px; }
 #adjustment-form { padding: 20px; }
+.adjustment-type-control { grid-template-columns: repeat(3, 1fr); }
 
 .dialog-heading {
   display: flex;
@@ -711,8 +711,8 @@ dialog::backdrop { background: rgba(20, 24, 22, 0.42); }
 .toast.error { background: #a83a31; }
 
 @media (max-width: 1060px) {
-  .app-header { grid-template-columns: minmax(160px, 1fr) auto; }
-  .header-actions { grid-column: 1 / -1; grid-row: 2; justify-self: end; }
+  .app-header { grid-template-columns: minmax(160px, 1fr) auto auto; }
+  .header-actions { grid-column: 3; grid-row: 1; justify-self: end; }
   .month-nav { grid-column: 2; grid-row: 1; }
   .summary-band { grid-template-columns: repeat(3, 1fr); }
   .summary-item:nth-child(3) { border-right: 0; }
@@ -729,7 +729,7 @@ dialog::backdrop { background: rgba(20, 24, 22, 0.42); }
 @media (max-width: 760px) {
   body { min-width: 0; }
   .app-header { grid-template-columns: 1fr auto; }
-  .header-actions { grid-column: 1 / -1; grid-row: 3; justify-self: stretch; flex-wrap: wrap; }
+  .header-actions { grid-column: 2; grid-row: 1; justify-self: end; flex-wrap: nowrap; }
   .month-nav { grid-column: 1 / -1; grid-row: 2; justify-content: center; }
   .summary-band { grid-template-columns: 1fr 1fr; }
   .summary-item:nth-child(2) { border-right: 0; }

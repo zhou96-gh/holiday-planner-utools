@@ -20,8 +20,6 @@
           <button id="next-month" class="icon-button" type="button" title="下个月" aria-label="下个月">›</button>
         </div>
         <div class="header-actions">
-          <button id="add-adjustment" class="primary-button" type="button">调班</button>
-          <button id="add-date" class="text-button" type="button">维护日期</button>
           <button id="settings-toggle" class="text-button" type="button" aria-controls="settings-view" aria-expanded="false">设置</button>
         </div>
       </header>
@@ -141,69 +139,61 @@
       </main>
     </div>
 
-    <dialog id="date-dialog">
-      <form method="dialog" id="date-form">
-        <div class="dialog-heading">
-          <div><span class="eyebrow">日期修正</span><h2 id="dialog-date-title"></h2></div>
-          <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
-        </div>
-        <label class="field-label" for="edit-date">日期</label>
-        <input id="edit-date" type="date" required />
-        <label class="field-label" for="edit-kind">类型</label>
-        <select id="edit-kind">
-          <option value="">无官方安排</option>
-          <option value="legal">放假</option>
-          <option value="off">周末 / 调休</option>
-          <option value="work">法定补班</option>
-        </select>
-        <label class="field-label" for="edit-name">名称</label>
-        <input id="edit-name" type="text" maxlength="30" placeholder="例如：国庆节" />
-        <div id="date-preview" class="date-preview"></div>
-        <div class="dialog-actions">
-          <button class="secondary-button" value="cancel" type="submit">取消</button>
-          <button id="save-date" class="primary-button" value="default" type="submit">保存</button>
-        </div>
-      </form>
-    </dialog>
-
     <dialog id="adjustment-dialog">
       <form method="dialog" id="adjustment-form">
         <div class="dialog-heading">
-          <div><span class="eyebrow">调休补班</span><h2 id="adjustment-dialog-title">发起调休</h2></div>
+          <div><span class="eyebrow">调班与修正</span><h2 id="adjustment-dialog-title">发起调休</h2></div>
           <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
         </div>
         <span class="field-label">类型</span>
-        <div id="adjustment-type" class="segmented-control">
+        <div id="adjustment-type" class="segmented-control adjustment-type-control">
           <button type="button" data-value="rest">调休</button>
           <button type="button" data-value="work">补班</button>
+          <button type="button" data-value="correction">修正</button>
         </div>
-        <div class="time-range-grid">
-          <div>
-            <label class="field-label" for="adjustment-start-date">开始日期</label>
-            <input id="adjustment-start-date" type="date" required />
+        <div id="adjustment-fields">
+          <div class="time-range-grid">
+            <div>
+              <label class="field-label" for="adjustment-start-date">开始日期</label>
+              <input id="adjustment-start-date" type="date" required />
+            </div>
+            <div>
+              <label class="field-label" for="adjustment-start-period">开始时段</label>
+              <select id="adjustment-start-period">
+                <option value="am">上午</option>
+                <option value="pm">下午</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label" for="adjustment-end-date">结束日期</label>
+              <input id="adjustment-end-date" type="date" required />
+            </div>
+            <div>
+              <label class="field-label" for="adjustment-end-period">结束时段</label>
+              <select id="adjustment-end-period">
+                <option value="am">上午</option>
+                <option value="pm">下午</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label class="field-label" for="adjustment-start-period">开始时段</label>
-            <select id="adjustment-start-period">
-              <option value="am">上午</option>
-              <option value="pm">下午</option>
-            </select>
-          </div>
-          <div>
-            <label class="field-label" for="adjustment-end-date">结束日期</label>
-            <input id="adjustment-end-date" type="date" required />
-          </div>
-          <div>
-            <label class="field-label" for="adjustment-end-period">结束时段</label>
-            <select id="adjustment-end-period">
-              <option value="am">上午</option>
-              <option value="pm">下午</option>
-            </select>
-          </div>
+          <label class="field-label" for="adjustment-note">备注</label>
+          <input id="adjustment-note" type="text" maxlength="30" placeholder="可选" />
+          <div id="adjustment-preview" class="date-preview"></div>
         </div>
-        <label class="field-label" for="adjustment-note">备注</label>
-        <input id="adjustment-note" type="text" maxlength="30" placeholder="可选" />
-        <div id="adjustment-preview" class="date-preview"></div>
+        <div id="correction-fields" hidden>
+          <label class="field-label" for="edit-date">日期</label>
+          <input id="edit-date" type="date" required />
+          <label class="field-label" for="edit-kind">类型</label>
+          <select id="edit-kind">
+            <option value="">无官方安排</option>
+            <option value="legal">放假</option>
+            <option value="off">周末 / 调休</option>
+            <option value="work">法定补班</option>
+          </select>
+          <label class="field-label" for="edit-name">名称</label>
+          <input id="edit-name" type="text" maxlength="30" placeholder="例如：国庆节" />
+          <div id="date-preview" class="date-preview"></div>
+        </div>
         <div class="dialog-actions">
           <button class="secondary-button" value="cancel" type="submit">取消</button>
           <button id="save-adjustment" class="primary-button" value="default" type="submit">保存</button>

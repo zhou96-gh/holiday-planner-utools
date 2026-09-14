@@ -67,8 +67,6 @@ const elements = {
   calendarView: document.querySelector('#calendar-view'),
   settingsView: document.querySelector('#settings-view'),
   summaryBand: document.querySelector('#summary-band'),
-  addDate: document.querySelector('#add-date'),
-  addAdjustment: document.querySelector('#add-adjustment'),
   settingsToggle: document.querySelector('#settings-toggle'),
   calendarGrid: document.querySelector('#calendar-grid'),
   weekdayHeader: document.querySelector('#weekday-header'),
@@ -89,17 +87,16 @@ const elements = {
   expiredHolidayList: document.querySelector('#expired-holiday-list'),
   dataStatus: document.querySelector('#data-status'),
   importFile: document.querySelector('#import-file'),
-  dialog: document.querySelector('#date-dialog'),
-  dateForm: document.querySelector('#date-form'),
   editDate: document.querySelector('#edit-date'),
   editKind: document.querySelector('#edit-kind'),
   editName: document.querySelector('#edit-name'),
-  dialogDateTitle: document.querySelector('#dialog-date-title'),
   datePreview: document.querySelector('#date-preview'),
   adjustmentDialog: document.querySelector('#adjustment-dialog'),
   adjustmentForm: document.querySelector('#adjustment-form'),
   adjustmentDialogTitle: document.querySelector('#adjustment-dialog-title'),
   adjustmentType: document.querySelector('#adjustment-type'),
+  adjustmentFields: document.querySelector('#adjustment-fields'),
+  correctionFields: document.querySelector('#correction-fields'),
   adjustmentStartDate: document.querySelector('#adjustment-start-date'),
   adjustmentStartPeriod: document.querySelector('#adjustment-start-period'),
   adjustmentEndDate: document.querySelector('#adjustment-end-date'),
@@ -189,8 +186,6 @@ function setView(view) {
   elements.calendarView.hidden = isSettings;
   elements.summaryBand.hidden = isSettings;
   elements.calendarNavigation.hidden = isSettings;
-  elements.addDate.hidden = isSettings;
-  elements.addAdjustment.hidden = isSettings;
   elements.settingsView.hidden = !isSettings;
   elements.settingsToggle.textContent = isSettings ? '返回日历' : '设置';
   elements.settingsToggle.setAttribute('aria-expanded', String(isSettings));
@@ -500,27 +495,76 @@ function sumItemDays(items) {
   return items.reduce((total, item) => total + item.days, 0);
 }
 
-function openAdjustmentDialog(type, record = null) {
+function openAdjustmentDialog(type, record = null, dateKey = '', defaultPeriods = null) {
   selectedAdjustmentId = record?.id ?? '';
   selectedAdjustmentType = record?.type ?? type;
-  const defaultDate = toLocalDateKey(now);
+  const defaultDate = dateKey || toLocalDateKey(now);
   elements.adjustmentStartDate.value = record?.startDate ?? defaultDate;
-  elements.adjustmentStartPeriod.value = record?.startPeriod ?? 'am';
+  elements.adjustmentStartPeriod.value = record?.startPeriod ?? defaultPeriods?.start ?? 'am';
   elements.adjustmentEndDate.value = record?.endDate ?? defaultDate;
-  elements.adjustmentEndPeriod.value = record?.endPeriod ?? 'am';
+  elements.adjustmentEndPeriod.value = record?.endPeriod ?? defaultPeriods?.end ?? 'am';
   elements.adjustmentNote.value = record?.note ?? '';
+  if (selectedAdjustmentType === 'correction') {
+    initializeDateCorrection(defaultDate);
+  } else {
+    selectedDateKey = '';
+  }
   renderAdjustmentType();
-  updateAdjustmentPreview();
+  updateActiveDialogPreview();
   elements.adjustmentDialog.showModal();
 }
 
+function getDefaultAdjustmentForDate(dateKey) {
+  const day = classifyDay(dateKey, state.settings, state.holidays, state.adjustments);
+  const adjustedPeriod = ['am', 'pm'].find((period) => day.periods[period].manualAdjustment);
+  if (adjustedPeriod) {
+    const type = day.periods[adjustedPeriod].manualAdjustment;
+    const matchingPeriods = ['am', 'pm'].filter((period) => day.periods[period].manualAdjustment === type);
+    return {
+      type,
+      periods: { start: matchingPeriods[0], end: matchingPeriods.at(-1) }
+    };
+  }
+
+  const workingPeriods = ['am', 'pm'].filter((period) => !day.periods[period].isRest);
+  if (workingPeriods.length > 0) {
+    return {
+      type: 'rest',
+      periods: { start: workingPeriods[0], end: workingPeriods.at(-1) }
+    };
+  }
+
+  return { type: 'work', periods: { start: 'am', end: 'pm' } };
+}
+
 function renderAdjustmentType() {
-  elements.adjustmentDialogTitle.textContent = selectedAdjustmentId
-    ? `编辑${selectedAdjustmentType === 'rest' ? '调休' : '补班'}`
-    : `发起${selectedAdjustmentType === 'rest' ? '调休' : '补班'}`;
+  const isCorrection = selectedAdjustmentType === 'correction';
+  elements.adjustmentDialogTitle.textContent = isCorrection
+    ? '修正日期'
+    : selectedAdjustmentId
+      ? `编辑${selectedAdjustmentType === 'rest' ? '调休' : '补班'}`
+      : `发起${selectedAdjustmentType === 'rest' ? '调休' : '补班'}`;
   elements.adjustmentType.querySelectorAll('button').forEach((button) => {
     button.classList.toggle('active', button.dataset.value === selectedAdjustmentType);
   });
+  setDialogFieldsEnabled(elements.adjustmentFields, !isCorrection);
+  setDialogFieldsEnabled(elements.correctionFields, isCorrection);
+}
+
+function setDialogFieldsEnabled(container, enabled) {
+  container.hidden = !enabled;
+  container.querySelectorAll('input, select, textarea').forEach((field) => {
+    field.disabled = !enabled;
+  });
+}
+
+function updateActiveDialogPreview() {
+  if (selectedAdjustmentType === 'correction') {
+    updateDatePreview();
+    return;
+  }
+
+  updateAdjustmentPreview();
 }
 
 function getAdjustmentDraft() {
@@ -587,17 +631,22 @@ function createAdjustmentId() {
   return window.crypto?.randomUUID?.() ?? `adjustment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function openDateDialog(dateKey) {
+function initializeDateCorrection(dateKey) {
   selectedDateKey = dateKey;
   const record = state.holidays[dateKey];
   const resolvedDay = classifyDay(dateKey, state.settings, state.holidays);
+  const sourceCategories = Object.values(resolvedDay.periods).map((period) => period.sourceCategory);
   elements.editDate.value = dateKey;
   elements.editKind.value = record?.kind === 'block'
-    ? ({ 'pure-legal': 'legal', 'makeup-off': 'off', 'adjusted-work': 'work' }[resolvedDay.category] ?? '')
+    ? sourceCategories.includes('pure-legal')
+      ? 'legal'
+      : sourceCategories.includes('adjusted-work')
+        ? 'work'
+        : sourceCategories.includes('makeup-off')
+          ? 'off'
+          : ''
     : record?.kind ?? '';
   elements.editName.value = record?.kind === 'block' ? resolvedDay.holiday?.name ?? '' : record?.name ?? '';
-  updateDatePreview();
-  elements.dialog.showModal();
 }
 
 function updateDatePreview() {
@@ -606,7 +655,6 @@ function updateDatePreview() {
     return;
   }
 
-  elements.dialogDateTitle.textContent = formatLongDate(dateKey);
   const previewHolidays = { ...state.holidays };
   const kind = elements.editKind.value;
   if (kind) {
@@ -616,7 +664,7 @@ function updateDatePreview() {
   }
 
   const day = classifyDay(dateKey, state.settings, previewHolidays);
-  elements.datePreview.textContent = getDayPeriodText(day);
+  elements.datePreview.textContent = `${formatLongDate(dateKey)} · ${getDayPeriodText(day)}`;
 }
 
 function saveDateEdit() {
@@ -739,10 +787,6 @@ document.querySelector('#today-button').addEventListener('click', () => {
   viewMonth = now.getMonth() + 1;
   render();
 });
-document.querySelector('#add-date').addEventListener('click', () => {
-  openDateDialog(`${viewYear}-${String(viewMonth).padStart(2, '0')}-01`);
-});
-elements.addAdjustment.addEventListener('click', () => openAdjustmentDialog('rest'));
 elements.settingsToggle.addEventListener('click', () => {
   setView(activeView === 'settings' ? 'calendar' : 'settings');
 });
@@ -750,7 +794,8 @@ elements.settingsToggle.addEventListener('click', () => {
 elements.calendarGrid.addEventListener('click', (event) => {
   const day = event.target.closest('.day-cell');
   if (day) {
-    openDateDialog(day.dataset.date);
+    const defaults = getDefaultAdjustmentForDate(day.dataset.date);
+    openAdjustmentDialog(defaults.type, null, day.dataset.date, defaults.periods);
   }
 });
 
@@ -782,7 +827,8 @@ elements.calendarView.addEventListener('click', (event) => {
     viewYear = year;
     viewMonth = month;
     render();
-    openDateDialog(row.dataset.date);
+    const defaults = getDefaultAdjustmentForDate(row.dataset.date);
+    openAdjustmentDialog(defaults.type, null, row.dataset.date, defaults.periods);
   }
 });
 
@@ -871,25 +917,23 @@ document.querySelector('#reset-data').addEventListener('click', () => {
 elements.editDate.addEventListener('change', updateDatePreview);
 elements.editKind.addEventListener('change', updateDatePreview);
 elements.editName.addEventListener('input', updateDatePreview);
-elements.dateForm.addEventListener('submit', (event) => {
-  if (event.submitter?.value === 'cancel') {
-    return;
-  }
-
-  event.preventDefault();
-  saveDateEdit();
-  elements.dialog.close();
-});
-
 elements.adjustmentType.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-value]');
   if (!button) {
     return;
   }
 
+  if (button.dataset.value === 'correction' && selectedAdjustmentType !== 'correction') {
+    selectedAdjustmentId = '';
+    if (!selectedDateKey) {
+      initializeDateCorrection(
+        elements.adjustmentStartDate.value || `${viewYear}-${String(viewMonth).padStart(2, '0')}-01`
+      );
+    }
+  }
   selectedAdjustmentType = button.dataset.value;
   renderAdjustmentType();
-  updateAdjustmentPreview();
+  updateActiveDialogPreview();
 });
 [
   elements.adjustmentStartDate,
@@ -904,6 +948,12 @@ elements.adjustmentForm.addEventListener('submit', (event) => {
   }
 
   event.preventDefault();
+  if (selectedAdjustmentType === 'correction') {
+    saveDateEdit();
+    elements.adjustmentDialog.close();
+    return;
+  }
+
   if (saveAdjustmentRecord()) {
     elements.adjustmentDialog.close();
   }
