@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>假期安排</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand-block">
+          <img src="assets/logo.svg" alt="" class="brand-logo" />
+          <div><h1>假期安排</h1><p id="data-status">已载入 2026 年官方安排</p></div>
+        </div>
+        <div id="calendar-navigation" class="month-nav" aria-label="月份导航">
+          <button id="prev-month" class="icon-button" type="button" title="上个月" aria-label="上个月">‹</button>
+          <button id="today-button" class="text-button" type="button">今天</button>
+          <strong id="month-title"></strong>
+          <button id="next-month" class="icon-button" type="button" title="下个月" aria-label="下个月">›</button>
+        </div>
+        <div class="header-actions">
+          <button id="add-date" class="primary-button" type="button">添加日期</button>
+          <button id="settings-toggle" class="text-button" type="button" aria-controls="settings-view" aria-expanded="false">设置</button>
+        </div>
+      </header>
+
+      <section id="summary-band" class="summary-band" aria-label="本月统计">
+        <div class="summary-item"><span>本月休息</span><strong id="summary-rest">0</strong><small>天</small></div>
+        <div class="summary-item pure"><span>法定假</span><strong id="summary-pure">0</strong><small>天</small></div>
+        <div class="summary-item"><span>大小休日</span><strong id="summary-schedule">0</strong><small>天</small></div>
+        <div class="summary-item work"><span>法定调休</span><strong id="summary-adjusted">0</strong><small>天</small></div>
+      </section>
+
+      <main id="calendar-view" class="workspace">
+        <section class="calendar-panel">
+          <div class="legend" aria-label="日历图例">
+            <span><i class="legend-dot pure-dot"></i>法定假</span>
+            <span><i class="legend-dot arranged-dot"></i>调休</span>
+            <span><i class="legend-dot rest-dot"></i>周末/大小休</span>
+            <span><i class="legend-dot work-dot"></i>法定调休</span>
+          </div>
+          <div class="calendar-stage">
+            <button id="calendar-prev-month" class="calendar-side-button" type="button" title="上个月" aria-label="日历上个月">‹</button>
+            <div class="calendar-board">
+              <div id="weekday-header" class="weekday-header" aria-hidden="true">
+                <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+              </div>
+              <div id="calendar-grid" class="calendar-grid"></div>
+            </div>
+            <button id="calendar-next-month" class="calendar-side-button" type="button" title="下个月" aria-label="日历下个月">›</button>
+          </div>
+        </section>
+
+        <aside class="result-panel">
+          <section class="panel-section">
+            <div class="section-heading"><h2><span id="result-year"></span> 法定假</h2><span id="year-pure-count" class="count-badge">0 天</span></div>
+            <div id="pure-holiday-list" class="holiday-list"></div>
+          </section>
+          <section id="expired-holiday-section" class="panel-section expired-section" hidden>
+            <div class="section-heading"><h2>已过期假期</h2><span id="expired-holiday-count" class="count-badge muted">0 天</span></div>
+            <div id="expired-holiday-list" class="holiday-list compact"></div>
+          </section>
+        </aside>
+      </main>
+
+      <main id="settings-view" class="settings-view" hidden>
+        <div class="settings-content">
+          <div class="settings-page-heading">
+            <div><span class="eyebrow">偏好设置</span><h2>假期计算设置</h2></div>
+            <span id="current-week-badge" class="week-badge"></span>
+          </div>
+
+          <div class="settings-panel">
+            <section class="settings-group">
+              <h3>大小休设置</h3>
+              <label class="field-label" for="week-starts-on">每周开始于</label>
+              <select id="week-starts-on">
+                <option value="6">周日</option>
+                <option value="0">周一</option>
+                <option value="1">周二</option>
+                <option value="2">周三</option>
+                <option value="3">周四</option>
+                <option value="4">周五</option>
+                <option value="5">周六</option>
+              </select>
+              <label class="field-label" for="anchor-monday">锚点周一</label>
+              <input id="anchor-monday" type="date" required />
+              <span class="field-label">锚点周类型</span>
+              <div class="segmented-control" id="anchor-week-type">
+                <button type="button" data-value="big">大休周</button>
+                <button type="button" data-value="small">小休周</button>
+              </div>
+              <fieldset><legend>大休周休息日</legend><div class="weekday-options" data-mode="big"></div></fieldset>
+              <fieldset><legend>小休周休息日</legend><div class="weekday-options" data-mode="small"></div></fieldset>
+            </section>
+
+            <section class="settings-group data-actions">
+              <h3>节假日数据</h3>
+              <div class="button-row">
+                <button id="import-data" class="secondary-button" type="button">导入</button>
+                <button id="export-data" class="secondary-button" type="button">导出</button>
+              </div>
+              <button id="reset-data" class="quiet-button" type="button">恢复内置 2026 数据</button>
+              <input id="import-file" type="file" accept="application/json,.json" hidden />
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="date-dialog">
+      <form method="dialog" id="date-form">
+        <div class="dialog-heading">
+          <div><span class="eyebrow">日期修正</span><h2 id="dialog-date-title"></h2></div>
+          <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <label class="field-label" for="edit-date">日期</label>
+        <input id="edit-date" type="date" required />
+        <label class="field-label" for="edit-kind">类型</label>
+        <select id="edit-kind">
+          <option value="">无官方安排</option>
+          <option value="legal">法定假</option>
+          <option value="off">周末 / 调休</option>
+          <option value="work">法定调休</option>
+        </select>
+        <label class="field-label" for="edit-name">名称</label>
+        <input id="edit-name" type="text" maxlength="30" placeholder="例如：国庆节" />
+        <div id="date-preview" class="date-preview"></div>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel" type="submit">取消</button>
+          <button id="save-date" class="primary-button" value="default" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>
