@@ -53,7 +53,7 @@ export function transformHolidayPayload(payload, requestedYear) {
     }
 
     if (day.isOffDay === false) {
-      records[day.date] = { kind: 'work', name: `${day.name}法定调休` };
+      records[day.date] = { kind: 'work', name: `${day.name}法定补班` };
       workDaysByName.set(day.name, (workDaysByName.get(day.name) ?? 0) + 1);
     }
   });

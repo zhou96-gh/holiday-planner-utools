@@ -16,9 +16,9 @@ const payload = {
   ]
 };
 
-test('远端年度数据会转换为法定区间和法定调休日', () => {
+test('远端年度数据会转换为法定区间和法定补班日', () => {
   const records = transformHolidayPayload(payload, 2026);
-  assert.deepEqual(records['2026-09-20'], { kind: 'work', name: '国庆节法定调休' });
+  assert.deepEqual(records['2026-09-20'], { kind: 'work', name: '国庆节法定补班' });
   assert.equal(records['2026-10-01'].kind, 'block');
   assert.equal(records['2026-10-01'].legalDays, 3);
   assert.equal(records['2026-10-01'].makeupDays, 2);
@@ -28,14 +28,15 @@ test('远端数据转换后继续遵守大小休显示规则', () => {
   const records = transformHolidayPayload(payload, 2026);
   const settings = {
     ...DEFAULT_SETTINGS,
-    anchorMonday: '2026-09-14',
-    anchorWeekType: 'big',
-    bigRestDays: [5, 6],
-    smallRestDays: [6]
+    anchorMonday: '2026-09-14'
   };
   assert.equal(classifyDay('2026-10-03', settings, records).category, 'schedule-rest');
-  assert.equal(classifyDay('2026-10-05', settings, records).category, 'pure-legal');
-  assert.equal(classifyDay('2026-10-06', settings, records).category, 'makeup-off');
+  const holiday = classifyDay('2026-10-05', settings, records);
+  assert.equal(holiday.category, 'schedule-rest');
+  assert.deepEqual(holiday.officialLabels, ['放假']);
+  const suggestedRest = classifyDay('2026-10-06', settings, records);
+  assert.equal(suggestedRest.category, 'regular-work');
+  assert.deepEqual(suggestedRest.officialLabels, ['法定调休']);
 });
 
 test('主数据源失败时会使用备用地址', async () => {
