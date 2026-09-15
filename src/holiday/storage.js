@@ -8,7 +8,77 @@ import {
   sanitizeSettings
 } from './core.js';
 
-export const STORAGE_VERSION = 6;
+export const STORAGE_VERSION = 7;
+const APPEARANCE_MODES = new Set(['system', 'light', 'dark']);
+const COLOR_SCHEME_IDS = new Set(['default', 'custom']);
+export const CUSTOM_COLOR_TOKENS = [
+  'page', 'surface', 'panel', 'panel-muted',
+  'header', 'header-text', 'header-muted', 'text',
+  'muted', 'faint', 'toc-bg',
+  'border', 'border-strong', 'control', 'hover',
+  'warm-hover', 'badge-bg', 'primary', 'primary-hover',
+  'primary-text', 'error-strong',
+  'rest-bg', 'holiday-bg', 'manual-rest-bg', 'manual-work-bg',
+  'green', 'red', 'purple', 'gold',
+  'stripe',
+  'tag-work-bg', 'tag-suggestion-bg', 'tag-holiday-bg', 'preview-bg',
+  'preview-error-bg', 'tag-neutral-bg'
+];
+const REQUIRED_ALPHA_COLOR_TOKENS = new Set(['toc-bg', 'stripe', 'tag-neutral-bg']);
+export const ALPHA_COLOR_TOKENS = new Set([
+  ...REQUIRED_ALPHA_COLOR_TOKENS, 'rest-bg', 'holiday-bg', 'manual-rest-bg', 'manual-work-bg'
+]);
+
+function sanitizeCustomColors(value) {
+  const result = { light: {}, dark: {} };
+  for (const mode of ['light', 'dark']) {
+    const colors = value?.[mode];
+    if (!colors || typeof colors !== 'object' || Array.isArray(colors)) {
+      continue;
+    }
+    for (const token of CUSTOM_COLOR_TOKENS) {
+      const pattern = REQUIRED_ALPHA_COLOR_TOKENS.has(token) ? /^#[0-9a-f]{8}$/i
+        : ALPHA_COLOR_TOKENS.has(token) ? /^#[0-9a-f]{6}([0-9a-f]{2})?$/i : /^#[0-9a-f]{6}$/i;
+      if (typeof colors[token] === 'string' && pattern.test(colors[token])) {
+        result[mode][token] = colors[token].toLowerCase();
+      }
+    }
+  }
+  return result;
+}
+
+export function decodeCustomColorsImport(imported) {
+  const colors = imported && typeof imported === 'object' && Object.hasOwn(imported, 'customColors')
+    ? imported.customColors : imported;
+  if (!colors || typeof colors !== 'object' || Array.isArray(colors)
+    || !['light', 'dark'].every((mode) => colors[mode] && typeof colors[mode] === 'object'
+      && !Array.isArray(colors[mode]))) {
+    throw new Error('配色方案需包含浅色和深色配置');
+  }
+
+  const result = sanitizeCustomColors(colors);
+  for (const mode of ['light', 'dark']) {
+    for (const token of CUSTOM_COLOR_TOKENS) {
+      if (Object.hasOwn(colors[mode], token) && !Object.hasOwn(result[mode], token)) {
+        throw new Error(`无效配色：${mode}.${token}`);
+      }
+    }
+  }
+  if (Object.keys(result.light).length + Object.keys(result.dark).length === 0
+    && (Object.keys(colors.light).length || Object.keys(colors.dark).length)) {
+    throw new Error('配色方案中没有可识别的颜色');
+  }
+  return result;
+}
+
+function sanitizeAppearance(value) {
+  return APPEARANCE_MODES.has(value) ? value : 'system';
+}
+
+function sanitizeColorSchemeId(id) {
+  return COLOR_SCHEME_IDS.has(id) || typeof id === 'string'
+    && /^[a-z0-9][a-z0-9-]*\.json$/.test(id) ? id : 'default';
+}
 
 function sanitizeLoadedYears(years) {
   if (!Array.isArray(years)) {
@@ -23,9 +93,12 @@ export function encodeState(state) {
   return {
     version: STORAGE_VERSION,
     settings: state.settings,
+    appearance: sanitizeAppearance(state.appearance),
+    colorSchemeId: sanitizeColorSchemeId(state.colorSchemeId),
+    customColors: sanitizeCustomColors(state.customColors),
     holidayData: encodeHolidays(state.holidays),
     loadedYears: state.loadedYears,
-    adjustments: state.adjustments
+    adjustments: sanitizeAdjustmentRecords(state.adjustments)
   };
 }
 
@@ -37,6 +110,9 @@ export function decodeState(stored) {
   return {
     version: STORAGE_VERSION,
     settings: sanitizeSettings(stored.settings ?? DEFAULT_SETTINGS),
+    appearance: sanitizeAppearance(stored.appearance),
+    colorSchemeId: sanitizeColorSchemeId(stored.colorSchemeId),
+    customColors: sanitizeCustomColors(stored.customColors),
     holidays: decodeHolidays(stored.holidayData),
     loadedYears: sanitizeLoadedYears(stored.loadedYears ?? [2026]),
     adjustments: sanitizeAdjustmentRecords(stored.adjustments)

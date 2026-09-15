@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distRoot = resolve(projectRoot, 'dist');
 const packageRoot = resolve(distRoot, 'holiday-planner-utools');
-const packageFiles = ['plugin.json', 'index.html', 'assets', 'src'];
+const packageFiles = ['plugin.json', 'index.html', 'preload.js', 'assets', 'src', 'themes'];
 
 if (!packageRoot.startsWith(`${distRoot}${sep}`)) {
   throw new Error('离线打包目录必须位于 dist 目录内');
@@ -19,7 +19,7 @@ for (const file of packageFiles) {
 }
 
 const plugin = JSON.parse(await readFile(join(packageRoot, 'plugin.json'), 'utf8'));
-for (const file of [plugin.main, plugin.logo]) {
+for (const file of [plugin.main, plugin.logo, plugin.preload]) {
   const fileStat = await stat(join(packageRoot, file));
   if (!fileStat.isFile()) {
     throw new Error(`插件运行文件不存在：${file}`);

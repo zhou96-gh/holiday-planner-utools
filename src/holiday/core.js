@@ -114,36 +114,34 @@ function getRangeHalfDays(startDate, startPeriod, endDate, endPeriod) {
   return dayDifference * 2 + endOffset - startOffset + 1;
 }
 
+export function getAdjustmentRanges(record) {
+  if (!record) {
+    return [];
+  }
+
+  if (Array.isArray(record.ranges)) {
+    return record.ranges;
+  }
+  return VALID_ADJUSTMENT_TYPES.has(record.type) ? [record] : [];
+}
+
 export function calculateAdjustmentDays(record, settings, holidays) {
-  if (!record || !VALID_ADJUSTMENT_TYPES.has(record.type)) {
-    return 0;
-  }
+  return getAdjustmentRanges(record).reduce((total, range) => {
+    if (!VALID_ADJUSTMENT_TYPES.has(range.type) || getRangeHalfDays(
+      range.startDate, range.startPeriod, range.endDate, range.endPeriod
+    ) === 0) {
+      return total;
+    }
 
-  const halfDays = getRangeHalfDays(
-    record.startDate,
-    record.startPeriod,
-    record.endDate,
-    record.endPeriod
-  );
-  if (halfDays === 0) {
-    return 0;
-  }
-
-  let total = 0;
-  let dateKey = record.startDate;
-  while (dateKey <= record.endDate) {
-    const periods = ['am', 'pm'].filter((period) => isApplicableAdjustmentPeriod(
-      record,
-      dateKey,
-      period,
-      settings,
-      holidays
-    ));
-    total += periods.length / 2;
-    dateKey = addDays(dateKey, 1);
-  }
-
-  return total;
+    let dateKey = range.startDate;
+    while (dateKey <= range.endDate) {
+      total += ['am', 'pm'].filter((period) => isApplicableAdjustmentPeriod(
+        range, dateKey, period, settings, holidays
+      )).length / 2;
+      dateKey = addDays(dateKey, 1);
+    }
+    return total;
+  }, 0);
 }
 
 function isActualRestPeriod(dateKey, period, settings, holidays) {
@@ -166,34 +164,117 @@ function isApplicableAdjustmentPeriod(record, dateKey, period, settings, holiday
 }
 
 export function hasAdjustmentOverlap(record, records, settings, holidays) {
-  const halfDays = getRangeHalfDays(
-    record?.startDate,
-    record?.startPeriod,
-    record?.endDate,
-    record?.endPeriod
-  );
-  if (halfDays === 0 || !Array.isArray(records)) {
+  const ranges = getAdjustmentRanges(record);
+  if (!Array.isArray(records)) {
     return false;
   }
 
-  let dateKey = record.startDate;
-  while (dateKey <= record.endDate) {
-    const hasConflict = ['am', 'pm'].some((period) => {
-      if (!isApplicableAdjustmentPeriod(record, dateKey, period, settings, holidays)) {
-        return false;
-      }
-
-      return records.some((existing) => existing.id !== record.id
-        && isApplicableAdjustmentPeriod(existing, dateKey, period, settings, holidays));
-    });
-    if (hasConflict) {
-      return true;
+  const existingRanges = records.filter((item) => item.id !== record?.id)
+    .flatMap((item) => getAdjustmentRanges(item));
+  return ranges.some((range, index) => {
+    if (getRangeHalfDays(range.startDate, range.startPeriod, range.endDate, range.endPeriod) === 0) {
+      return false;
     }
+    let dateKey = range.startDate;
+    while (dateKey <= range.endDate) {
+      const conflict = ['am', 'pm'].some((period) => isApplicableAdjustmentPeriod(
+        range, dateKey, period, settings, holidays
+      ) && [...existingRanges, ...ranges.slice(0, index)].some((other) => isApplicableAdjustmentPeriod(
+        other, dateKey, period, settings, holidays
+      )));
+      if (conflict) {
+        return true;
+      }
+      dateKey = addDays(dateKey, 1);
+    }
+    return false;
+  });
+}
 
-    dateKey = addDays(dateKey, 1);
-  }
+export function mergeAssociatedAdjustment(record, records, settings, holidays) {
+  const selected = getAdjustmentRanges(record);
+  const mergedIds = [];
+  const remaining = [];
+  records.forEach((existing) => {
+    const preserved = [];
+    let absorbed = false;
+    getAdjustmentRanges(existing).forEach((range) => {
+      const slots = [];
+      let dateKey = range.startDate;
+      while (dateKey <= range.endDate) {
+        ['am', 'pm'].forEach((period) => {
+          if (!includesAdjustmentPeriod(range, dateKey, period)) {
+            return;
+          }
+          const claimed = isApplicableAdjustmentPeriod(range, dateKey, period, settings, holidays)
+            && selected.some((target) => isApplicableAdjustmentPeriod(
+              target, dateKey, period, settings, holidays
+            ));
+          absorbed ||= claimed;
+          if (!claimed) {
+            slots.push({ dateKey, period, ordinal: Math.round(parseDate(dateKey).getTime() / DAY_MS) * 2
+              + (period === 'pm' ? 1 : 0) });
+          }
+        });
+        dateKey = addDays(dateKey, 1);
+      }
+      let group = [];
+      const flush = () => {
+        if (group.length === 0) {
+          return;
+        }
+        const first = group[0];
+        const last = group.at(-1);
+        const segment = { type: range.type, startDate: first.dateKey, startPeriod: first.period,
+          endDate: last.dateKey, endPeriod: last.period };
+        if (calculateAdjustmentDays(segment, settings, holidays) > 0) {
+          preserved.push(segment);
+        }
+        group = [];
+      };
+      slots.forEach((slot) => {
+        if (group.length && slot.ordinal !== group.at(-1).ordinal + 1) {
+          flush();
+        }
+        group.push(slot);
+      });
+      flush();
+    });
+    if (absorbed) {
+      mergedIds.push(existing.id);
+      preserved.forEach((range) => remaining.push({
+        associationType: 'none', ranges: [range], note: existing.note,
+        createdAt: existing.createdAt
+      }));
+    }
+  });
+  return { mergedIds, remaining };
+}
 
-  return false;
+function mergeContiguousAdjustmentRanges(ranges) {
+  const slots = ranges.map((range, index) => ({
+    range: { ...range }, index,
+    start: Math.round(parseDate(range.startDate).getTime() / DAY_MS) * 2
+      + (range.startPeriod === 'pm' ? 1 : 0),
+    end: Math.round(parseDate(range.endDate).getTime() / DAY_MS) * 2
+      + (range.endPeriod === 'pm' ? 1 : 0)
+  })).sort((left, right) => left.range.type.localeCompare(right.range.type)
+    || left.start - right.start);
+  const merged = [];
+  slots.forEach((slot) => {
+    const previous = merged.at(-1);
+    if (previous?.range.type === slot.range.type && slot.start <= previous.end + 1) {
+      if (slot.end > previous.end) {
+        previous.range.endDate = slot.range.endDate;
+        previous.range.endPeriod = slot.range.endPeriod;
+        previous.end = slot.end;
+      }
+      previous.index = Math.min(previous.index, slot.index);
+    } else {
+      merged.push(slot);
+    }
+  });
+  return merged.sort((left, right) => left.index - right.index).map(({ range }) => range);
 }
 
 export function sanitizeAdjustmentRecords(input) {
@@ -202,47 +283,61 @@ export function sanitizeAdjustmentRecords(input) {
   }
 
   return input.flatMap((record, index) => {
-    if (!record || !VALID_ADJUSTMENT_TYPES.has(record.type)) {
+    if (!record || !Array.isArray(record.ranges)) {
       return [];
     }
-
-    const halfDays = getRangeHalfDays(
-      record.startDate,
-      record.startPeriod,
-      record.endDate,
-      record.endPeriod
-    );
-    if (halfDays === 0) {
+    const ranges = record.ranges.flatMap((range) => {
+      if (!range || !VALID_ADJUSTMENT_TYPES.has(range.type)
+        || !isDateKey(range.startDate) || !isDateKey(range.endDate)
+        || !VALID_PERIODS.has(range.startPeriod) || !VALID_PERIODS.has(range.endPeriod)
+        || getRangeHalfDays(range.startDate, range.startPeriod, range.endDate, range.endPeriod) === 0) {
+        return [];
+      }
+      return [{
+        type: range.type,
+        startDate: range.startDate,
+        startPeriod: range.startPeriod,
+        endDate: range.endDate,
+        endPeriod: range.endPeriod
+      }];
+    });
+    if (ranges.length === 0) {
       return [];
     }
 
     return [{
       id: typeof record.id === 'string' && record.id ? record.id.slice(0, 80) : `imported-${index}`,
-      type: record.type,
-      startDate: record.startDate,
-      startPeriod: record.startPeriod,
-      endDate: record.endDate,
-      endPeriod: record.endPeriod,
+      associationType: record.associationType === 'required' ? 'required' : 'none',
+      ranges: mergeContiguousAdjustmentRanges(ranges),
       note: typeof record.note === 'string' ? record.note.slice(0, 30) : '',
       createdAt: Number.isInteger(record.createdAt) && record.createdAt > 0 ? record.createdAt : index + 1
     }];
   });
 }
 
+export function pruneExpiredAdjustments(records, todayKey) {
+  return records.filter((record) => getAdjustmentRanges(record).some((range) =>
+    range.endDate >= todayKey));
+}
+
 export function getAdjustmentSummary(records, settings, holidays) {
-  const totals = records.reduce(
-    (summary, record) => {
-      summary[record.type] += calculateAdjustmentDays(record, settings, holidays);
-      return summary;
-    },
-    { rest: 0, work: 0 }
-  );
+  const totals = { rest: 0, work: 0 };
+  const balanced = { rest: 0, work: 0 };
+  records.forEach((record) => {
+    getAdjustmentRanges(record).forEach((range) => {
+      const days = calculateAdjustmentDays(range, settings, holidays);
+      totals[range.type] += days;
+      if (record.associationType === 'required') {
+        balanced[range.type] += days;
+      }
+    });
+  });
 
   return {
     restTotal: totals.rest,
     workTotal: totals.work,
-    restRemaining: Math.max(0, totals.rest - totals.work),
-    workRemaining: Math.max(0, totals.work - totals.rest)
+    restRemaining: Math.max(0, balanced.rest - balanced.work),
+    workRemaining: Math.max(0, balanced.work - balanced.rest)
   };
 }
 
@@ -274,23 +369,24 @@ function resolvePeriodResult(sourcePeriod, adjustmentRecords, hasPureLegalPeriod
     manualAdjustment: null,
     manualAdjustmentId: null
   };
-  const record = Array.isArray(adjustmentRecords)
-    ? adjustmentRecords.find((item) => includesAdjustmentPeriod(item, sourcePeriod.dateKey, sourcePeriod.period)
-      && (item.type === 'rest' ? !isRest : isRest))
+  const entry = Array.isArray(adjustmentRecords)
+    ? adjustmentRecords.flatMap((item) => getAdjustmentRanges(item).map((range) => ({ item, range })))
+      .find(({ range }) => includesAdjustmentPeriod(range, sourcePeriod.dateKey, sourcePeriod.period)
+        && (range.type === 'rest' ? !isRest : isRest))
     : null;
-  if (!record) {
+  if (!entry) {
     return result;
   }
 
-  const manualIsRest = record.type === 'rest';
+  const manualIsRest = entry.range.type === 'rest';
   const resolvedCategory = manualIsRest ? 'manual-rest' : 'manual-work';
   return {
     ...result,
     isRest: manualIsRest,
     category: resolvedCategory,
     visualCategory: resolvedCategory,
-    manualAdjustment: record.type,
-    manualAdjustmentId: record.id
+    manualAdjustment: entry.range.type,
+    manualAdjustmentId: entry.item.id
   };
 }
 

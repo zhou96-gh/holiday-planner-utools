@@ -11,6 +11,8 @@ import {
   getWeekType,
   getYearLegalBreakdown,
   hasAdjustmentOverlap,
+  mergeAssociatedAdjustment,
+  pruneExpiredAdjustments,
   sanitizeAdjustmentRecords,
   sanitizeHolidays,
   sanitizeSettings,
@@ -372,61 +374,134 @@ test('记录范围内未实际调班的时段仍可使用', () => {
   assert.equal(hasAdjustmentOverlap(weekendWork, existing, settings, {}), false);
 });
 
-test('调休和补班余额互相抵扣且最小为零', () => {
+test('只有关联类型为需要的调班参与余额互抵', () => {
+  const rest = { type: 'rest', startDate: '2026-09-14', startPeriod: 'am',
+    endDate: '2026-09-14', endPeriod: 'pm' };
+  const work = { type: 'work', startDate: '2026-09-20', startPeriod: 'am',
+    endDate: '2026-09-20', endPeriod: 'am' };
   const records = [
-    {
-      type: 'rest',
-      startDate: '2026-09-14',
-      startPeriod: 'am',
-      endDate: '2026-09-14',
-      endPeriod: 'pm'
-    },
-    {
-      type: 'work',
-      startDate: '2026-09-20',
-      startPeriod: 'am',
-      endDate: '2026-09-20',
-      endPeriod: 'am'
-    }
+    { associationType: 'required', ranges: [rest] },
+    { associationType: 'required', ranges: [work] },
+    { associationType: 'none', ranges: [rest] },
+    { associationType: 'none', ranges: [work] }
   ];
   assert.deepEqual(getAdjustmentSummary(records, settings, {}), {
-    restTotal: 1,
-    workTotal: 0.5,
-    restRemaining: 0.5,
-    workRemaining: 0
+    restTotal: 2, workTotal: 1, restRemaining: 0.5, workRemaining: 0
+  });
+  assert.deepEqual(getAdjustmentSummary(records.slice(2), settings, {}), {
+    restTotal: 1, workTotal: 0.5, restRemaining: 0, workRemaining: 0
   });
 });
 
-test('导入调休补班记录时剔除无效和倒序范围', () => {
-  const result = sanitizeAdjustmentRecords([
-    {
-      id: 'record-1',
-      type: 'work',
-      startDate: '2026-09-14',
-      startPeriod: 'pm',
-      endDate: '2026-09-15',
-      endPeriod: 'am',
-      note: '项目支持',
-      createdAt: 100
-    },
-    {
-      type: 'rest',
-      startDate: '2026-09-15',
-      startPeriod: 'pm',
-      endDate: '2026-09-15',
-      endPeriod: 'am'
-    }
-  ]);
-  assert.deepEqual(result, [{
-    id: 'record-1',
-    type: 'work',
-    startDate: '2026-09-14',
-    startPeriod: 'pm',
-    endDate: '2026-09-15',
-    endPeriod: 'am',
-    note: '项目支持',
-    createdAt: 100
+test('新调班结构剔除无效范围且不迁移旧单段记录', () => {
+  const result = sanitizeAdjustmentRecords([{
+    id: 'new', associationType: 'required', ranges: [
+      { type: 'work', startDate: '2026-09-20', startPeriod: 'pm',
+        endDate: '2026-09-20', endPeriod: 'pm' },
+      { type: 'rest', startDate: '2026-09-15', startPeriod: 'pm',
+        endDate: '2026-09-15', endPeriod: 'am' }
+    ], note: '项目支持', createdAt: 100
+  }, {
+    id: 'old', type: 'rest', startDate: '2026-09-14', startPeriod: 'am',
+    endDate: '2026-09-14', endPeriod: 'pm'
   }]);
+  assert.deepEqual(result, [{
+    id: 'new', associationType: 'required', ranges: [{ type: 'work',
+      startDate: '2026-09-20', startPeriod: 'pm', endDate: '2026-09-20', endPeriod: 'pm' }],
+    note: '项目支持', createdAt: 100
+  }]);
+});
+
+test('通用调班记录同时存多段调休和补班并按半天分类', () => {
+  const operation = sanitizeAdjustmentRecords([{
+    id: 'paired', associationType: 'required', note: '联动', createdAt: 100,
+    ranges: [
+      { type: 'rest', startDate: '2026-09-14', startPeriod: 'am', endDate: '2026-09-14', endPeriod: 'am' },
+      { type: 'rest', startDate: '2026-09-15', startPeriod: 'pm', endDate: '2026-09-15', endPeriod: 'pm' },
+      { type: 'work', startDate: '2026-09-20', startPeriod: 'am', endDate: '2026-09-20', endPeriod: 'am' }
+    ]
+  }])[0];
+  assert.equal(operation.ranges.length, 3);
+  assert.equal(calculateAdjustmentDays(operation, settings, {}), 1.5);
+  assert.deepEqual(getAdjustmentSummary([operation], settings, {}), {
+    restTotal: 1, workTotal: 0.5, restRemaining: 0.5, workRemaining: 0
+  });
+  assert.equal(classifyDay('2026-09-14', settings, {}, [operation]).periods.am.manualAdjustmentId, 'paired');
+  assert.equal(classifyDay('2026-09-20', settings, {}, [operation]).periods.am.manualAdjustment, 'work');
+  assert.equal(sanitizeAdjustmentRecords([{ associationType: 'required', ranges: [operation.ranges[0]] }])[0]
+    .associationType, 'required');
+});
+
+test('同次调班连续调休范围合成一条，补班仍独立展示', () => {
+  const operation = { id: 'paired', associationType: 'required', note: '联动', createdAt: 100,
+    ranges: [
+      { type: 'rest', startDate: '2026-09-28', startPeriod: 'am',
+        endDate: '2026-09-29', endPeriod: 'am' },
+      { type: 'work', startDate: '2026-09-19', startPeriod: 'am',
+        endDate: '2026-09-20', endPeriod: 'pm' },
+      { type: 'rest', startDate: '2026-09-29', startPeriod: 'pm',
+        endDate: '2026-09-30', endPeriod: 'pm' }
+    ] };
+  const [normalized] = sanitizeAdjustmentRecords([operation]);
+  assert.deepEqual(normalized.ranges, [
+    { type: 'rest', startDate: '2026-09-28', startPeriod: 'am',
+      endDate: '2026-09-30', endPeriod: 'pm' },
+    operation.ranges[1]
+  ]);
+  assert.deepEqual(getAdjustmentSummary([normalized], settings, {}), {
+    restTotal: 3, workTotal: 2, restRemaining: 1, workRemaining: 0
+  });
+  assert.equal(classifyDay('2026-09-29', settings, {}, [normalized]).periods.pm.manualAdjustment, 'rest');
+  assert.equal(sanitizeAdjustmentRecords([{ ...operation, ranges: [
+    operation.ranges[0], { ...operation.ranges[2], startDate: '2026-10-01', endDate: '2026-10-01' }
+  ] }])[0].ranges.length, 2);
+});
+
+test('通用调班不允许内部重叠，编辑自身不冲突', () => {
+  const first = { type: 'rest', startDate: '2026-09-14', startPeriod: 'am',
+    endDate: '2026-09-14', endPeriod: 'pm' };
+  const operation = { id: 'same', associationType: 'required', ranges: [first,
+    { ...first, startPeriod: 'pm' }] };
+  assert.equal(hasAdjustmentOverlap(operation, [operation], settings, {}), true);
+  operation.ranges.pop();
+  assert.equal(hasAdjustmentOverlap(operation, [operation], settings, {}), false);
+});
+
+test('关联日期占用已有范围时仅并入所选半天，其余自动分段保留', () => {
+  const old = { id: 'old', associationType: 'none', note: '原记录', createdAt: 10,
+    ranges: [{ type: 'rest', startDate: '2026-09-14', startPeriod: 'am',
+      endDate: '2026-09-18', endPeriod: 'pm' }] };
+  const selected = { id: 'new', associationType: 'required', ranges: [
+    { type: 'rest', startDate: '2026-09-16', startPeriod: 'am',
+      endDate: '2026-09-17', endPeriod: 'pm' }
+  ] };
+  const merged = mergeAssociatedAdjustment(selected, [old], settings, {});
+  assert.deepEqual(merged.mergedIds, ['old']);
+  assert.deepEqual(merged.remaining.map((item) => item.ranges[0]), [
+    { type: 'rest', startDate: '2026-09-14', startPeriod: 'am',
+      endDate: '2026-09-15', endPeriod: 'pm' },
+    { type: 'rest', startDate: '2026-09-18', startPeriod: 'am',
+      endDate: '2026-09-18', endPeriod: 'pm' }
+  ]);
+  assert.equal(getAdjustmentSummary([selected, ...merged.remaining], settings, {}).restTotal, 5);
+  assert.equal(mergeAssociatedAdjustment({ id: 'none', ranges: [
+    { type: 'work', startDate: '2026-09-20', startPeriod: 'am',
+      endDate: '2026-09-20', endPeriod: 'am' }
+  ] }, [old], settings, {}).mergedIds.length, 0);
+});
+
+test('过期清理按整次操作执行，仍有今天或未来日期则保留', () => {
+  const record = (id, ranges) => ({ id, associationType: 'required', ranges });
+  const range = (date) => ({ type: 'rest', startDate: date, startPeriod: 'am',
+    endDate: date, endPeriod: 'pm' });
+  const records = [
+    record('old', [range('2026-09-14')]),
+    record('mixed', [range('2026-09-14'), range('2026-09-15')]),
+    record('future', [range('2026-09-16')])
+  ];
+  assert.deepEqual(pruneExpiredAdjustments(records, '2026-09-15').map((item) => item.id),
+    ['mixed', 'future']);
+  assert.deepEqual(pruneExpiredAdjustments(records, '2026-09-17'), []);
 });
 
 test('内置 2026 数据包含 13 天法定额度和 6 个法定补班日', () => {

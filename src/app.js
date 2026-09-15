@@ -2,7 +2,9 @@ import { BUILT_IN_HOLIDAYS } from './holiday/data.js';
 import { fetchHolidayYear } from './holiday/fetch.js';
 import {
   STORAGE_VERSION,
+  CUSTOM_COLOR_TOKENS,
   decodeState,
+  decodeCustomColorsImport,
   encodeState,
   sanitizeLoadedYears
 } from './holiday/storage.js';
@@ -12,17 +14,21 @@ import {
   calculateAdjustmentDays,
   classifyDay,
   getAdjustmentSummary,
+  getAdjustmentRanges,
   getConsecutiveRestState,
   getMonthSummary,
   getYearLegalBreakdown,
   hasAdjustmentOverlap,
+  mergeAssociatedAdjustment,
+  pruneExpiredAdjustments,
   sanitizeAdjustmentRecords,
   sanitizeSettings,
   startOfWeek
 } from './holiday/core.js';
 
-const STORAGE_KEY = 'holiday-planner-state-v6';
+const STORAGE_KEY = 'holiday-planner-state-v7';
 const LEGACY_STORAGE_KEYS = [
+  'holiday-planner-state-v6',
   'holiday-planner-state-v5',
   'holiday-planner-state-v4',
   'holiday-planner-state-v3'
@@ -61,15 +67,57 @@ const WEEKEND_PRESETS = {
   }
 };
 
+const COLOR_DEFAULTS = {
+  light: {
+    page: '#eef0ed', surface: '#ffffff', panel: '#f8f9f7',
+    'panel-muted': '#f1f3f1', header: '#202522', 'header-text': '#ffffff',
+    'header-muted': '#b9c0bb', text: '#202522', muted: '#66706a',
+    faint: '#89908c', 'toc-bg': '#f8f9f7f5',
+    border: '#d8ddda', 'border-strong': '#cfd5d1', control: '#e8ebe8',
+    hover: '#f4f6f4', 'warm-hover': '#f4e9e7', 'badge-bg': '#dcece8',
+    primary: '#d94b3d', 'primary-hover': '#bf3d31', 'primary-text': '#ffffff',
+    'error-strong': '#a83a31',
+    'rest-bg': '#edf7f4', 'holiday-bg': '#fde9e6', 'manual-rest-bg': '#fff4cf',
+    'manual-work-bg': '#f2eef8', green: '#267568', red: '#b5453b',
+    purple: '#60478f', gold: '#966108', stripe: '#26756824',
+    'tag-work-bg': '#e7def4', 'tag-suggestion-bg': '#fff0cf', 'tag-holiday-bg': '#f8deda',
+    'preview-bg': '#eef5f2', 'preview-error-bg': '#f8ebe9', 'tag-neutral-bg': '#20252214'
+  },
+  dark: {
+    page: '#303633', surface: '#48514a', panel: '#3e4741',
+    'panel-muted': '#515b53', header: '#292f2c', 'header-text': '#f9faf8',
+    'header-muted': '#d4ddd5', text: '#f7f9f6', muted: '#d1dbd3',
+    faint: '#b9c6bc', 'toc-bg': '#3e4741f2',
+    border: '#758178', 'border-strong': '#94a296', control: '#56615a',
+    hover: '#606b61', 'warm-hover': '#654c4d', 'badge-bg': '#435e4e',
+    primary: '#f0bb9f', 'primary-hover': '#ffd0b1', 'primary-text': '#2f3430',
+    'error-strong': '#f0aaa4',
+    'rest-bg': '#465b4e', 'holiday-bg': '#5c4d50', 'manual-rest-bg': '#5e5544',
+    'manual-work-bg': '#534e5e', green: '#bde6cf', red: '#ffd0c5',
+    purple: '#e1d0ed', gold: '#f4dcaf', stripe: '#bde6cf3f',
+    'tag-work-bg': '#5d536a', 'tag-suggestion-bg': '#6a5941', 'tag-holiday-bg': '#694c50',
+    'preview-bg': '#495f50', 'preview-error-bg': '#624d50', 'tag-neutral-bg': '#ffffff24'
+  }
+};
+const systemDarkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+const builtInColorSchemes = new Map();
+
 const now = new Date();
 let viewYear = now.getFullYear();
 let viewMonth = now.getMonth() + 1;
 let selectedDateKey = '';
+let activeDateKey = toLocalDateKey(now);
 let selectedAdjustmentId = '';
-let selectedAdjustmentType = 'rest';
+let editingAdjustmentId = '';
+let selectedAdjustmentDateKey = '';
+let selectedAdjustmentType = 'adjustment';
+let associationType = 'none';
+let activeAdjustmentRangeType = 'rest';
+let rangeSequence = 0;
 let toastTimer = null;
 let state = loadState();
-let activeView = 'calendar';
+let colorEditMode = state.appearance === 'dark'
+  || (state.appearance === 'system' && systemDarkMedia.matches) ? 'dark' : 'light';
 const yearFetchStates = new Map();
 
 const elements = {
@@ -77,8 +125,16 @@ const elements = {
   calendarNavigation: document.querySelector('#calendar-navigation'),
   calendarView: document.querySelector('#calendar-view'),
   settingsView: document.querySelector('#settings-view'),
+  appearanceMode: document.querySelector('#appearance-mode'),
+  colorScheme: document.querySelector('#color-scheme'),
+  colorMode: document.querySelector('#color-mode'),
+  colorGrid: document.querySelector('#color-grid'),
+  colorPreview: document.querySelector('#color-preview'),
+  resetCustomColors: document.querySelector('#reset-custom-colors'),
+  colorImportFile: document.querySelector('#color-import-file'),
   summaryBand: document.querySelector('#summary-band'),
   settingsToggle: document.querySelector('#settings-toggle'),
+  settingsBack: document.querySelector('#settings-back'),
   calendarGrid: document.querySelector('#calendar-grid'),
   weekdayHeader: document.querySelector('#weekday-header'),
   weekStartsOn: document.querySelector('#week-starts-on'),
@@ -103,15 +159,21 @@ const elements = {
   editName: document.querySelector('#edit-name'),
   datePreview: document.querySelector('#date-preview'),
   adjustmentDialog: document.querySelector('#adjustment-dialog'),
+  adjustmentPicker: document.querySelector('#adjustment-picker'),
+  adjustmentPickerTitle: document.querySelector('#adjustment-picker-title'),
+  adjustmentPickerList: document.querySelector('#adjustment-picker-list'),
+  newAdjustment: document.querySelector('#new-adjustment'),
   adjustmentForm: document.querySelector('#adjustment-form'),
   adjustmentDialogTitle: document.querySelector('#adjustment-dialog-title'),
   adjustmentType: document.querySelector('#adjustment-type'),
+  associationControl: document.querySelector('#counterpart-type'),
+  restRangeSection: document.querySelector('#rest-range-section'),
+  workRangeSection: document.querySelector('#work-range-section'),
+  restRangeList: document.querySelector('#rest-range-list'),
+  workRangeList: document.querySelector('#work-range-list'),
+  rangeTemplate: document.querySelector('#adjustment-range-template'),
   adjustmentFields: document.querySelector('#adjustment-fields'),
   correctionFields: document.querySelector('#correction-fields'),
-  adjustmentStartDate: document.querySelector('#adjustment-start-date'),
-  adjustmentStartPeriod: document.querySelector('#adjustment-start-period'),
-  adjustmentEndDate: document.querySelector('#adjustment-end-date'),
-  adjustmentEndPeriod: document.querySelector('#adjustment-end-period'),
   adjustmentNote: document.querySelector('#adjustment-note'),
   adjustmentPreview: document.querySelector('#adjustment-preview'),
   toast: document.querySelector('#toast')
@@ -152,7 +214,13 @@ function loadState() {
   try {
     const saved = storageRead(STORAGE_KEY);
     if (saved) {
-      return decodeState(saved);
+      const decoded = decodeState(saved);
+      const active = pruneExpiredAdjustments(decoded.adjustments, toLocalDateKey(new Date()));
+      if (active.length !== decoded.adjustments.length) {
+        decoded.adjustments = active;
+        storageSet(encodeState(decoded));
+      }
+      return decoded;
     }
   } catch (error) {
     console.warn('读取假期设置失败', error);
@@ -163,6 +231,9 @@ function loadState() {
   return {
     version: STORAGE_VERSION,
     settings: sanitizeSettings(DEFAULT_SETTINGS),
+    appearance: 'system',
+    colorSchemeId: 'default',
+    customColors: { light: {}, dark: {} },
     holidays: cloneBuiltInHolidays(),
     loadedYears: [2026],
     adjustments: []
@@ -173,7 +244,81 @@ function persist() {
   storageSet(encodeState(state));
 }
 
+async function loadBuiltInColorSchemes() {
+  let entries;
+  if (window.readBuiltInColorSchemes) {
+    entries = window.readBuiltInColorSchemes();
+  } else {
+    const indexResponse = await fetch(new URL('../themes/index.json', import.meta.url));
+    if (!indexResponse.ok) {
+      throw new Error('配色方案清单读取失败');
+    }
+    const { files } = await indexResponse.json();
+    if (!Array.isArray(files) || files.some((file) => !/^[a-z0-9][a-z0-9-]*\.json$/.test(file))) {
+      throw new Error('配色方案清单无效');
+    }
+    entries = await Promise.all(files.map(async (id) => {
+      const response = await fetch(new URL('../themes/' + id, import.meta.url));
+      if (!response.ok) {
+        throw new Error('配色方案读取失败：' + id);
+      }
+      return { id, ...await response.json() };
+    }));
+  }
+
+  for (const { id, name, light, dark } of entries) {
+    if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9-]*\.json$/.test(id)
+      || typeof name !== 'string' || !name.trim()) {
+      throw new Error('内置配色名称或文件名无效');
+    }
+    const colors = decodeCustomColorsImport({ light, dark });
+    if (Object.keys(colors.light).length !== CUSTOM_COLOR_TOKENS.length
+      || Object.keys(colors.dark).length !== CUSTOM_COLOR_TOKENS.length) {
+      throw new Error('内置配色缺少颜色：' + name);
+    }
+    builtInColorSchemes.set(id, { name, colors });
+  }
+
+  elements.colorScheme.replaceChildren(
+    new Option('默认配色', 'default'),
+    ...[...builtInColorSchemes].map(([id, scheme]) => new Option(scheme.name, id)),
+    new Option('自定义', 'custom')
+  );
+  if (state.colorSchemeId !== 'default' && state.colorSchemeId !== 'custom'
+    && !builtInColorSchemes.has(state.colorSchemeId)) {
+    state.colorSchemeId = 'default';
+    persist();
+  }
+  render();
+}
+
+function getColorValues(mode) {
+  const overrides = state.colorSchemeId === 'custom'
+    ? state.customColors[mode] : builtInColorSchemes.get(state.colorSchemeId)?.colors[mode] ?? {};
+  return { ...COLOR_DEFAULTS[mode], ...overrides };
+}
+
+function applyColors() {
+  const root = document.documentElement;
+  root.dataset.theme = state.appearance;
+  const mode = state.appearance === 'system'
+    ? (systemDarkMedia.matches ? 'dark' : 'light') : state.appearance;
+  const colors = state.colorSchemeId === 'custom'
+    ? state.customColors[mode] : builtInColorSchemes.get(state.colorSchemeId)?.colors[mode] ?? {};
+  CUSTOM_COLOR_TOKENS.forEach((token) => {
+    if (colors[token]) {
+      root.style.setProperty('--' + token, colors[token]);
+    } else {
+      root.style.removeProperty('--' + token);
+    }
+  });
+  if (colors.primary && !colors['primary-hover']) {
+    root.style.setProperty('--primary-hover', colors.primary);
+  }
+}
+
 function render() {
+  applyColors();
   renderSettings();
   renderCalendar();
   renderSummary();
@@ -183,17 +328,48 @@ function render() {
 }
 
 function setView(view) {
-  activeView = view;
   const isSettings = view === 'settings';
   elements.calendarView.hidden = isSettings;
   elements.summaryBand.hidden = isSettings;
   elements.calendarNavigation.hidden = isSettings;
   elements.settingsView.hidden = !isSettings;
-  elements.settingsToggle.textContent = isSettings ? '返回日历' : '设置';
-  elements.settingsToggle.setAttribute('aria-expanded', String(isSettings));
+}
+
+function renderColorPreview() {
+  const colors = getColorValues(colorEditMode);
+  CUSTOM_COLOR_TOKENS.forEach((token) => {
+    elements.colorPreview.style.setProperty('--preview-' + token, colors[token]);
+  });
 }
 
 function renderSettings() {
+  elements.colorScheme.value = state.colorSchemeId;
+  const colors = getColorValues(colorEditMode);
+  elements.appearanceMode.querySelectorAll('button[data-value]').forEach((button) => {
+    const active = button.dataset.value === state.appearance;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  elements.colorMode.querySelectorAll('button[data-value]').forEach((button) => {
+    const active = button.dataset.value === colorEditMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  elements.colorGrid.querySelectorAll('input[data-color-token]').forEach((input) => {
+    const color = colors[input.dataset.colorToken];
+    const row = input.closest('.color-row');
+    input.value = color.slice(0, 7);
+    row.querySelector(':scope > output').textContent = color.slice(0, 7).toUpperCase();
+    const alpha = row.querySelector('input[data-alpha-token]');
+    if (alpha) {
+      alpha.value = color.length === 7 ? '0'
+        : String(Math.round((1 - parseInt(color.slice(7), 16) / 255) * 100));
+      alpha.nextElementSibling.textContent = alpha.value + '%';
+    }
+  });
+  elements.resetCustomColors.disabled = state.colorSchemeId !== 'custom'
+    || Object.keys(state.customColors[colorEditMode]).length === 0;
+  renderColorPreview();
   elements.weekStartsOn.value = String(state.settings.weekStartsOn);
   elements.anchorMonday.value = state.settings.anchorMonday;
 
@@ -239,7 +415,7 @@ function getWeekendPreset() {
 }
 
 function renderCalendar() {
-  elements.monthTitle.textContent = `${viewYear} 年 ${viewMonth} 月`;
+  elements.monthTitle.textContent = `${viewYear}年${viewMonth}月`;
   const weekdayLabels = [
     ...WEEKDAY_LABELS.slice(state.settings.weekStartsOn),
     ...WEEKDAY_LABELS.slice(0, state.settings.weekStartsOn)
@@ -280,6 +456,8 @@ function renderCalendar() {
     );
     button.classList.toggle('outside-month', !dateKey.startsWith(currentMonthPrefix));
     button.classList.toggle('today', dateKey === todayKey);
+    button.classList.toggle('selected', dateKey === activeDateKey);
+    button.setAttribute('aria-pressed', String(dateKey === activeDateKey));
     button.dataset.date = dateKey;
     const displayName = day.pureLegalAmount > 0 ? day.holiday?.name ?? '' : '';
     const lunarDate = formatLunarDate(dateKey);
@@ -372,8 +550,9 @@ function renderAdjustmentRecords() {
   const nextMonthYear = viewMonth === 12 ? viewYear + 1 : viewYear;
   const nextMonth = viewMonth === 12 ? 1 : viewMonth + 1;
   const nextMonthStart = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-01`;
-  const records = state.adjustments
-    .filter((record) => record.endDate >= monthStart && record.startDate < nextMonthStart)
+  const records = state.adjustments.flatMap((operation) => getAdjustmentRanges(operation)
+    .filter((range) => range.endDate >= monthStart && range.startDate < nextMonthStart)
+    .map((range) => ({ ...range, id: operation.id, note: operation.note, createdAt: operation.createdAt })))
     .sort((left, right) => right.createdAt - left.createdAt);
   elements.adjustmentRecordCount.textContent = `${records.length} 条`;
   elements.adjustmentRecordList.replaceChildren();
@@ -392,11 +571,13 @@ function renderAdjustmentRecords() {
     edit.type = 'button';
     edit.className = 'adjustment-main';
     edit.dataset.adjustmentId = record.id;
+    edit.dataset.adjustmentType = record.type;
     const date = document.createElement('span');
     date.className = 'adjustment-date';
     date.textContent = formatAdjustmentRange(record);
     const type = document.createElement('strong');
-    type.textContent = record.note || (record.type === 'rest' ? '调休' : '补班');
+    const typeLabel = record.type === 'rest' ? '调休' : '补班';
+    type.textContent = record.note ? `${typeLabel} · ${record.note}` : typeLabel;
     const days = document.createElement('small');
     const total = calculateAdjustmentDays(record, state.settings, state.holidays);
     days.textContent = `${formatDays(total)} 天`;
@@ -405,8 +586,8 @@ function renderAdjustmentRecords() {
     remove.type = 'button';
     remove.className = 'adjustment-delete';
     remove.dataset.deleteAdjustmentId = record.id;
-    remove.title = '删除记录';
-    remove.setAttribute('aria-label', `删除${record.type === 'rest' ? '调休' : '补班'}记录`);
+    remove.title = '删除整次调班';
+    remove.setAttribute('aria-label', '删除整次调班');
     remove.textContent = '×';
     row.append(edit, remove);
     elements.adjustmentRecordList.append(row);
@@ -516,23 +697,121 @@ function sumItemDays(items) {
   return items.reduce((total, item) => total + item.days, 0);
 }
 
+function readRangeRow(row, type) {
+  const fields = Object.fromEntries([...row.querySelectorAll('[data-range-field]')]
+    .map((input) => [input.dataset.rangeField, input.value]));
+  return { type, ...fields };
+}
+
+function appendRange(container, range = null) {
+  const row = elements.rangeTemplate.content.firstElementChild.cloneNode(true);
+  rangeSequence += 1;
+  row.querySelectorAll('[data-range-field]').forEach((input) => {
+    const field = input.dataset.rangeField;
+    input.id = `adjustment-range-${rangeSequence}-${field}`;
+    input.previousElementSibling.htmlFor = input.id;
+    input.value = range?.[field] ?? (input.tagName === 'SELECT' ? 'am' : '');
+  });
+  container.append(row);
+  return row;
+}
+
 function openAdjustmentDialog(type, record = null, dateKey = '', defaultPeriods = null) {
   selectedAdjustmentId = record?.id ?? '';
-  selectedAdjustmentType = record?.type ?? type;
-  const defaultDate = dateKey || toLocalDateKey(now);
-  elements.adjustmentStartDate.value = record?.startDate ?? defaultDate;
-  elements.adjustmentStartPeriod.value = record?.startPeriod ?? defaultPeriods?.start ?? 'am';
-  elements.adjustmentEndDate.value = record?.endDate ?? defaultDate;
-  elements.adjustmentEndPeriod.value = record?.endPeriod ?? defaultPeriods?.end ?? 'am';
+  editingAdjustmentId = selectedAdjustmentId;
+  selectedAdjustmentDateKey = dateKey || getAdjustmentRanges(record)[0]?.startDate || toLocalDateKey(now);
+  selectedAdjustmentType = type === 'correction' ? 'correction' : 'adjustment';
+  activeAdjustmentRangeType = type === 'work' ? 'work' : type === 'rest' ? 'rest'
+    : getAdjustmentRanges(record)[0]?.type ?? 'rest';
+  associationType = record?.associationType ?? 'none';
+  elements.restRangeList.replaceChildren();
+  elements.workRangeList.replaceChildren();
+  getAdjustmentRanges(record).forEach((range) => appendRange(
+    range.type === 'rest' ? elements.restRangeList : elements.workRangeList, range
+  ));
+  if (!record && selectedAdjustmentType !== 'correction') {
+    const defaultDate = dateKey || toLocalDateKey(now);
+    const initialRange = { startDate: defaultDate, startPeriod: defaultPeriods?.start ?? 'am',
+      endDate: defaultDate, endPeriod: defaultPeriods?.end ?? 'pm' };
+    appendRange(type === 'work' ? elements.workRangeList : elements.restRangeList, initialRange);
+  }
   elements.adjustmentNote.value = record?.note ?? '';
   if (selectedAdjustmentType === 'correction') {
-    initializeDateCorrection(defaultDate);
+    initializeDateCorrection(dateKey || toLocalDateKey(now));
   } else {
     selectedDateKey = '';
   }
   renderAdjustmentType();
   updateActiveDialogPreview();
   elements.adjustmentDialog.showModal();
+}
+
+function openNewAdjustmentForDate(dateKey, selectedPeriod = null) {
+  const day = classifyDay(dateKey, state.settings, state.holidays, state.adjustments);
+  const period = selectedPeriod ?? ['am', 'pm'].find((item) => !day.periods[item].manualAdjustment);
+  const type = period ? (day.periods[period].isRest ? 'work' : 'rest') : 'rest';
+  const periods = period ? { start: period, end: period } : { start: 'am', end: 'pm' };
+  openAdjustmentDialog(type, null, dateKey, periods);
+}
+
+function openAdjustmentPicker(dateKey, records, day) {
+  elements.adjustmentPicker.dataset.date = dateKey;
+  elements.adjustmentPickerTitle.textContent = formatLongDate(dateKey);
+  const entries = records.flatMap((operation) => getAdjustmentRanges(operation)
+    .filter((range) => range.startDate <= dateKey && range.endDate >= dateKey)
+    .map((range) => {
+    const record = { ...range, id: operation.id, note: operation.note };
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `adjustment-picker-item ${record.type}`;
+    button.dataset.pickAdjustmentId = record.id;
+    button.dataset.pickAdjustmentType = record.type;
+    const appliedPeriods = ['am', 'pm'].filter((period) => day.periods[period].manualAdjustmentId === record.id
+      && day.periods[period].manualAdjustment === record.type);
+    let periods = appliedPeriods;
+    if (periods.length === 0) {
+      periods = ['am', 'pm'].filter((period) => !(dateKey === record.startDate
+        && period === 'am' && record.startPeriod === 'pm')
+        && !(dateKey === record.endDate && period === 'pm' && record.endPeriod === 'am'));
+    }
+    const periodLabel = periods.length === 2 ? '全天' : periods[0] === 'am' ? '上午' : '下午';
+    const title = document.createElement('strong');
+    title.textContent = `${periodLabel} · 编辑调班（${record.type === 'rest' ? '调休' : '补班'}）`;
+    const note = document.createElement('span');
+    note.textContent = record.note || formatAdjustmentRange(record);
+    button.append(title, note);
+    return { button, period: periods[0] };
+  }));
+
+  ['am', 'pm'].forEach((period) => {
+    if (day.periods[period].manualAdjustment) {
+      return;
+    }
+
+    const type = day.periods[period].isRest ? 'work' : 'rest';
+    const draft = {
+      type, startDate: dateKey, startPeriod: period, endDate: dateKey, endPeriod: period
+    };
+    if (calculateAdjustmentDays(draft, state.settings, state.holidays) === 0
+      || hasAdjustmentOverlap(draft, state.adjustments, state.settings, state.holidays)) {
+      return;
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'adjustment-picker-item available';
+    button.dataset.pickPeriod = period;
+    const title = document.createElement('strong');
+    title.textContent = `${period === 'am' ? '上午' : '下午'} · 发起调班（${type === 'rest' ? '调休' : '补班'}）`;
+    const status = document.createElement('span');
+    status.textContent = `当前${day.periods[period].isRest ? '休息' : '上班'} · 可调班 0.5 天`;
+    button.append(title, status);
+    entries.push({ button, period });
+  });
+
+  entries.sort((left, right) => left.period.localeCompare(right.period));
+  elements.adjustmentPickerList.replaceChildren(...entries.map((entry) => entry.button));
+  elements.adjustmentPicker.showModal();
 }
 
 function getDefaultAdjustmentForDate(dateKey) {
@@ -563,16 +842,28 @@ function getDefaultAdjustmentForDate(dateKey) {
 
 function renderAdjustmentType() {
   const isCorrection = selectedAdjustmentType === 'correction';
-  elements.adjustmentDialogTitle.textContent = isCorrection
-    ? '修正日期'
-    : selectedAdjustmentId
-      ? `编辑${selectedAdjustmentType === 'rest' ? '调休' : '补班'}`
-      : `发起${selectedAdjustmentType === 'rest' ? '调休' : '补班'}`;
+  elements.adjustmentDialogTitle.textContent = isCorrection ? '修正日期'
+    : selectedAdjustmentId ? '编辑调班' : '新增调班';
+  const day = classifyDay(selectedAdjustmentDateKey, state.settings, state.holidays, state.adjustments);
+  elements.newAdjustment.hidden = !selectedAdjustmentId || isCorrection
+    || ['am', 'pm'].every((period) => day.periods[period].manualAdjustment);
   elements.adjustmentType.querySelectorAll('button').forEach((button) => {
-    button.classList.toggle('active', button.dataset.value === selectedAdjustmentType);
+    const selected = button.dataset.value === selectedAdjustmentType;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  elements.associationControl.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.value === associationType);
   });
   setDialogFieldsEnabled(elements.adjustmentFields, !isCorrection);
   setDialogFieldsEnabled(elements.correctionFields, isCorrection);
+  const primarySection = activeAdjustmentRangeType === 'work'
+    ? elements.workRangeSection : elements.restRangeSection;
+  const counterpartSection = activeAdjustmentRangeType === 'work'
+    ? elements.restRangeSection : elements.workRangeSection;
+  counterpartSection.before(primarySection);
+  setDialogFieldsEnabled(primarySection, !isCorrection);
+  setDialogFieldsEnabled(counterpartSection, !isCorrection && associationType === 'required');
 }
 
 function setDialogFieldsEnabled(container, enabled) {
@@ -587,83 +878,96 @@ function updateActiveDialogPreview() {
     updateDatePreview();
     return;
   }
-
   updateAdjustmentPreview();
 }
 
 function getAdjustmentDraft() {
+  const restRanges = [...elements.restRangeList.children].map((row) => readRangeRow(row, 'rest'));
+  const workRanges = [...elements.workRangeList.children].map((row) => readRangeRow(row, 'work'));
   return {
     id: selectedAdjustmentId,
-    type: selectedAdjustmentType,
-    startDate: elements.adjustmentStartDate.value,
-    startPeriod: elements.adjustmentStartPeriod.value,
-    endDate: elements.adjustmentEndDate.value,
-    endPeriod: elements.adjustmentEndPeriod.value,
+    associationType,
+    ranges: associationType === 'none'
+      ? activeAdjustmentRangeType === 'work' ? workRanges : restRanges
+      : [...restRanges, ...workRanges],
     note: elements.adjustmentNote.value.trim()
   };
 }
 
-function hasValidAdjustmentRange(record) {
-  if (!record.startDate || !record.endDate || record.endDate < record.startDate) {
+function hasValidAdjustmentRange(range) {
+  if (!range.startDate || !range.endDate || range.endDate < range.startDate) {
     return false;
   }
+  return range.startDate !== range.endDate
+    || range.startPeriod === 'am'
+    || range.endPeriod === 'pm';
+}
 
-  return record.startDate !== record.endDate
-    || record.startPeriod === 'am'
-    || record.endPeriod === 'pm';
+function getAdjustmentValidation(record) {
+  if (record.ranges.length === 0) {
+    return '至少添加一个调休或补班日期';
+  }
+  if (record.ranges.some((range) => !hasValidAdjustmentRange(range))) {
+    return '结束时间不能早于开始时间，且每个范围都需填日期';
+  }
+  if (hasAdjustmentOverlap(record, [record], state.settings, state.holidays)) {
+    return '本次调班有重复的半天';
+  }
+  if (record.associationType === 'none'
+    && hasAdjustmentOverlap(record, state.adjustments, state.settings, state.holidays)) {
+    return '所选范围包含已调班时段';
+  }
+  if (record.ranges.some((range) => calculateAdjustmentDays(range, state.settings, state.holidays) === 0)) {
+    return '有日期范围不包含可调班的半天';
+  }
+  return '';
 }
 
 function updateAdjustmentPreview() {
   const record = getAdjustmentDraft();
-  if (!hasValidAdjustmentRange(record)) {
-    elements.adjustmentPreview.textContent = '结束时间不能早于开始时间';
+  const error = getAdjustmentValidation(record);
+  if (error) {
+    elements.adjustmentPreview.textContent = error;
     elements.adjustmentPreview.classList.add('invalid');
     return;
   }
-
-  if (hasAdjustmentOverlap(record, state.adjustments, state.settings, state.holidays)) {
-    elements.adjustmentPreview.textContent = '所选范围包含已调班时段';
-    elements.adjustmentPreview.classList.add('invalid');
-    return;
-  }
-
-  const days = calculateAdjustmentDays(record, state.settings, state.holidays);
-  const rule = record.type === 'rest' ? '仅累计原本上班的时段' : '仅累计原本休息的时段';
-  elements.adjustmentPreview.textContent = `${rule} · 本次 ${formatDays(days)} 天`;
-  elements.adjustmentPreview.classList.toggle('invalid', days === 0);
+  const summary = getAdjustmentSummary([record], state.settings, state.holidays);
+  elements.adjustmentPreview.textContent = `本次调休 ${formatDays(summary.restTotal)} 天 · 补班 ${formatDays(summary.workTotal)} 天${record.associationType === 'required' && (!summary.restTotal || !summary.workTotal) ? ' · 关联日期可后续补充' : ''}`;
+  elements.adjustmentPreview.classList.remove('invalid');
 }
 
 function saveAdjustmentRecord() {
   const draft = getAdjustmentDraft();
-  if (!hasValidAdjustmentRange(draft)) {
-    showToast('所选范围内没有可记录的半天', true);
+  const error = getAdjustmentValidation(draft);
+  if (error) {
+    showToast(error, true);
     return false;
   }
-
-  if (hasAdjustmentOverlap(draft, state.adjustments, state.settings, state.holidays)) {
-    showToast('所选范围包含已调班时段', true);
-    return false;
-  }
-
-  const days = calculateAdjustmentDays(draft, state.settings, state.holidays);
-  if (days === 0) {
-    showToast('所选范围内没有可记录的半天', true);
-    return false;
-  }
-
   const existing = state.adjustments.find((record) => record.id === selectedAdjustmentId);
+  const detachedRanges = draft.associationType === 'none'
+    ? getAdjustmentRanges(existing).filter((range) => range.type !== activeAdjustmentRangeType) : [];
+  const detached = detachedRanges.length ? {
+    ...existing, id: createAdjustmentId(), associationType: 'none', ranges: detachedRanges
+  } : null;
   const record = {
     ...draft,
     id: selectedAdjustmentId || createAdjustmentId(),
     createdAt: existing?.createdAt ?? Date.now()
   };
+  const original = state.adjustments.filter((item) => item.id !== selectedAdjustmentId);
+  const reconciliation = record.associationType === 'required'
+    ? mergeAssociatedAdjustment(record, original, state.settings, state.holidays)
+    : { mergedIds: [], remaining: [] };
+  const remaining = reconciliation.remaining.map((item) => ({
+    ...item, id: createAdjustmentId()
+  }));
   state.adjustments = sanitizeAdjustmentRecords([
-    ...state.adjustments.filter((item) => item.id !== selectedAdjustmentId),
-    record
+    ...original.filter((item) => !reconciliation.mergedIds.includes(item.id)),
+    ...remaining, ...(detached ? [detached] : []), record
   ]);
   persist();
   render();
-  showToast(`${record.type === 'rest' ? '调休' : '补班'}记录已保存`);
+  showToast('调班操作已保存');
   return true;
 }
 
@@ -744,10 +1048,32 @@ function exportData() {
   showToast('数据已导出');
 }
 
+async function importCustomColors(file) {
+  try {
+    const imported = JSON.parse(await file.text());
+    const colors = decodeCustomColorsImport(imported);
+    state.customColors = colors;
+    state.colorSchemeId = 'custom';
+    persist();
+    applyColors();
+    renderSettings();
+    showToast('配色方案已导入');
+  } catch (error) {
+    showToast(error.message || '配色导入失败', true);
+  } finally {
+    elements.colorImportFile.value = '';
+  }
+}
+
 async function importData(file) {
   try {
     const imported = JSON.parse(await file.text());
     state = decodeState(imported);
+    if (state.colorSchemeId !== 'default' && state.colorSchemeId !== 'custom'
+      && !builtInColorSchemes.has(state.colorSchemeId)) {
+      state.colorSchemeId = 'default';
+    }
+    state.adjustments = pruneExpiredAdjustments(state.adjustments, toLocalDateKey(new Date()));
     persist();
     render();
     showToast('数据已导入');
@@ -808,24 +1134,95 @@ function formatLongDate(dateKey) {
   return `${year} 年 ${Number(month)} 月 ${Number(day)} 日`;
 }
 
-document.querySelector('#prev-month').addEventListener('click', () => moveMonth(-1));
-document.querySelector('#next-month').addEventListener('click', () => moveMonth(1));
 document.querySelector('#calendar-prev-month').addEventListener('click', () => moveMonth(-1));
 document.querySelector('#calendar-next-month').addEventListener('click', () => moveMonth(1));
 document.querySelector('#today-button').addEventListener('click', () => {
+  activeDateKey = toLocalDateKey(now);
   viewYear = now.getFullYear();
   viewMonth = now.getMonth() + 1;
   render();
 });
 elements.settingsToggle.addEventListener('click', () => {
-  setView(activeView === 'settings' ? 'calendar' : 'settings');
+  setView('settings');
+  elements.settingsBack.focus();
+});
+elements.settingsBack.addEventListener('click', () => {
+  setView('calendar');
+  elements.settingsToggle.focus();
 });
 
 elements.calendarGrid.addEventListener('click', (event) => {
   const day = event.target.closest('.day-cell');
-  if (day) {
-    const defaults = getDefaultAdjustmentForDate(day.dataset.date);
-    openAdjustmentDialog(defaults.type, defaults.record, day.dataset.date, defaults.periods);
+  if (!day || event.button !== 0) {
+    return;
+  }
+
+  const dateKey = day.dataset.date;
+  activeDateKey = dateKey;
+  if (Number(dateKey.slice(0, 4)) !== viewYear || Number(dateKey.slice(5, 7)) !== viewMonth) {
+    viewYear = Number(dateKey.slice(0, 4));
+    viewMonth = Number(dateKey.slice(5, 7));
+    render();
+    elements.calendarGrid.querySelector(`[data-date="${dateKey}"]`).focus();
+    return;
+  }
+
+  const previous = elements.calendarGrid.querySelector('.day-cell.selected');
+  if (previous) {
+    previous.classList.remove('selected');
+    previous.setAttribute('aria-pressed', 'false');
+  }
+  day.classList.add('selected');
+  day.setAttribute('aria-pressed', 'true');
+});
+
+elements.calendarGrid.addEventListener('contextmenu', (event) => {
+  const day = event.target.closest('.day-cell');
+  if (!day) {
+    return;
+  }
+  event.preventDefault();
+
+  const dateKey = day.dataset.date;
+  const records = state.adjustments.filter((record) => getAdjustmentRanges(record).some((range) =>
+    range.startDate <= dateKey && range.endDate >= dateKey));
+  const resolvedDay = classifyDay(dateKey, state.settings, state.holidays, state.adjustments);
+  if (records.flatMap(getAdjustmentRanges).filter((range) => range.startDate <= dateKey
+    && range.endDate >= dateKey).length > 1 || !canMergeDayPeriods(resolvedDay)) {
+    openAdjustmentPicker(dateKey, records, resolvedDay);
+  } else {
+    const defaults = getDefaultAdjustmentForDate(dateKey);
+    openAdjustmentDialog(defaults.type, defaults.record, dateKey, defaults.periods);
+  }
+});
+
+elements.adjustmentPicker.addEventListener('click', (event) => {
+  if (event.target.closest('[data-picker-close]')) {
+    elements.adjustmentPicker.close();
+    return;
+  }
+
+  const dateKey = elements.adjustmentPicker.dataset.date;
+  const selected = event.target.closest('[data-pick-adjustment-id]');
+  if (selected) {
+    const record = state.adjustments.find((item) => item.id === selected.dataset.pickAdjustmentId);
+    if (record) {
+      elements.adjustmentPicker.close();
+      openAdjustmentDialog(selected.dataset.pickAdjustmentType, record, dateKey);
+    }
+    return;
+  }
+
+  const available = event.target.closest('[data-pick-period]');
+  if (available) {
+    elements.adjustmentPicker.close();
+    openNewAdjustmentForDate(dateKey, available.dataset.pickPeriod);
+    return;
+  }
+
+  if (event.target.closest('#picker-correction')) {
+    elements.adjustmentPicker.close();
+    openAdjustmentDialog('correction', null, dateKey);
   }
 });
 
@@ -833,11 +1230,11 @@ elements.calendarView.addEventListener('click', (event) => {
   const deleteButton = event.target.closest('[data-delete-adjustment-id]');
   if (deleteButton) {
     const record = state.adjustments.find((item) => item.id === deleteButton.dataset.deleteAdjustmentId);
-    if (record) {
+    if (record && window.confirm('这会删除整次调班中的全部调休与补班日期，继续吗？')) {
       state.adjustments = state.adjustments.filter((item) => item.id !== record.id);
       persist();
       render();
-      showToast('记录已删除');
+      showToast('整次调班已删除');
     }
     return;
   }
@@ -846,7 +1243,7 @@ elements.calendarView.addEventListener('click', (event) => {
   if (adjustmentButton) {
     const record = state.adjustments.find((item) => item.id === adjustmentButton.dataset.adjustmentId);
     if (record) {
-      openAdjustmentDialog(record.type, record);
+      openAdjustmentDialog(adjustmentButton.dataset.adjustmentType, record);
     }
     return;
   }
@@ -877,6 +1274,90 @@ elements.weekStartsOn.addEventListener('change', () => {
   state.settings.weekStartsOn = Number(elements.weekStartsOn.value);
   persist();
   render();
+});
+
+elements.appearanceMode.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-value]');
+  if (!button || button.dataset.value === state.appearance) {
+    return;
+  }
+
+  state.appearance = button.dataset.value;
+  applyColors();
+  persist();
+  renderSettings();
+});
+
+elements.colorScheme.addEventListener('change', () => {
+  const id = elements.colorScheme.value;
+  if (id !== 'default' && id !== 'custom' && !builtInColorSchemes.has(id)) {
+    return;
+  }
+  state.colorSchemeId = id;
+  persist();
+  applyColors();
+  renderSettings();
+});
+
+systemDarkMedia.addEventListener('change', applyColors);
+
+elements.colorMode.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-value]');
+  if (!button || button.dataset.value === colorEditMode) {
+    return;
+  }
+  colorEditMode = button.dataset.value;
+  renderSettings();
+});
+
+elements.colorGrid.addEventListener('input', (event) => {
+  const control = event.target.closest('input[data-color-token], input[data-alpha-token]');
+  if (!control) {
+    return;
+  }
+  if (state.colorSchemeId !== 'custom') {
+    const scheme = builtInColorSchemes.get(state.colorSchemeId)?.colors;
+    state.customColors = scheme
+      ? { light: { ...scheme.light }, dark: { ...scheme.dark } }
+      : { light: {}, dark: {} };
+    state.colorSchemeId = 'custom';
+    elements.colorScheme.value = 'custom';
+  }
+  const row = control.closest('.color-row');
+  const input = row.querySelector('input[data-color-token]');
+  const token = input.dataset.colorToken;
+  const alpha = row.querySelector('input[data-alpha-token]');
+  const color = input.value + (alpha
+    ? Math.round((100 - Number(alpha.value)) / 100 * 255).toString(16).padStart(2, '0') : '');
+  const defaultColor = COLOR_DEFAULTS[colorEditMode][token];
+  if (color === defaultColor || (defaultColor.length === 7 && color === defaultColor + 'ff')) {
+    delete state.customColors[colorEditMode][token];
+  } else {
+    state.customColors[colorEditMode][token] = color;
+  }
+  row.querySelector(':scope > output').textContent = input.value.toUpperCase();
+  if (alpha) {
+    alpha.nextElementSibling.textContent = alpha.value + '%';
+  }
+  elements.resetCustomColors.disabled = Object.keys(state.customColors[colorEditMode]).length === 0;
+  renderColorPreview();
+  applyColors();
+});
+elements.colorGrid.addEventListener('change', persist);
+
+document.querySelector('#import-custom-colors').addEventListener('click', () => elements.colorImportFile.click());
+elements.colorImportFile.addEventListener('change', () => {
+  const [file] = elements.colorImportFile.files;
+  if (file) {
+    void importCustomColors(file);
+  }
+});
+
+elements.resetCustomColors.addEventListener('click', () => {
+  state.customColors[colorEditMode] = {};
+  persist();
+  applyColors();
+  renderSettings();
 });
 
 document.querySelector('#weekend-preset').addEventListener('click', (event) => {
@@ -944,36 +1425,102 @@ document.querySelector('#reset-data').addEventListener('click', () => {
   showToast('已恢复内置 2026 数据');
 });
 
+document.addEventListener('click', (event) => {
+  const input = event.target.closest('input[type="date"]');
+  if (!input || input.disabled || typeof input.showPicker !== 'function') {
+    return;
+  }
+  try {
+    input.showPicker();
+  } catch {
+    // The host may restrict native pickers; date text entry remains available.
+  }
+});
+
 elements.editDate.addEventListener('change', updateDatePreview);
 elements.editKind.addEventListener('change', updateDatePreview);
 elements.editName.addEventListener('input', updateDatePreview);
+elements.newAdjustment.addEventListener('click', () => {
+  elements.adjustmentDialog.close();
+  openNewAdjustmentForDate(selectedAdjustmentDateKey);
+});
 elements.adjustmentType.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-value]');
-  if (!button) {
+  if (!button || button.dataset.value === selectedAdjustmentType) {
     return;
   }
-
-  if (button.dataset.value === 'correction' && selectedAdjustmentType !== 'correction') {
+  if (button.dataset.value === 'correction') {
     selectedAdjustmentId = '';
     if (!selectedDateKey) {
       initializeDateCorrection(
-        elements.adjustmentStartDate.value || `${viewYear}-${String(viewMonth).padStart(2, '0')}-01`
+        elements.adjustmentForm.querySelector('[data-range-field="startDate"]')?.value
+          || selectedAdjustmentDateKey
       );
     }
+  } else {
+    selectedAdjustmentId = editingAdjustmentId;
   }
   selectedAdjustmentType = button.dataset.value;
   renderAdjustmentType();
   updateActiveDialogPreview();
 });
-[
-  elements.adjustmentStartDate,
-  elements.adjustmentStartPeriod,
-  elements.adjustmentEndDate,
-  elements.adjustmentEndPeriod
-].forEach((input) => input.addEventListener('change', updateAdjustmentPreview));
+elements.adjustmentType.addEventListener('keydown', (event) => {
+  const tabs = [...elements.adjustmentType.querySelectorAll('[role="tab"]')];
+  const active = tabs.findIndex((tab) => tab.dataset.value === selectedAdjustmentType);
+  let next = active;
+  if (event.key === 'ArrowRight') {
+    next = (active + 1) % tabs.length;
+  } else if (event.key === 'ArrowLeft') {
+    next = (active - 1 + tabs.length) % tabs.length;
+  } else if (event.key === 'Home') {
+    next = 0;
+  } else if (event.key === 'End') {
+    next = tabs.length - 1;
+  } else {
+    return;
+  }
+  event.preventDefault();
+  tabs[next].click();
+  tabs[next].focus();
+});
+elements.associationControl.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-value]');
+  if (!button) {
+    return;
+  }
+  associationType = button.dataset.value;
+  renderAdjustmentType();
+  updateAdjustmentPreview();
+});
+document.querySelector('#add-rest-range').addEventListener('click', () => {
+  appendRange(elements.restRangeList);
+  updateAdjustmentPreview();
+});
+document.querySelector('#add-work-range').addEventListener('click', () => {
+  appendRange(elements.workRangeList);
+  updateAdjustmentPreview();
+});
+elements.adjustmentFields.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-remove-range]');
+  if (button) {
+    button.closest('.adjustment-range-row').remove();
+    updateAdjustmentPreview();
+  }
+});
+elements.adjustmentFields.addEventListener('change', updateAdjustmentPreview);
 elements.adjustmentNote.addEventListener('input', updateAdjustmentPreview);
 elements.adjustmentForm.addEventListener('click', (event) => {
   if (event.target.closest('[data-dialog-close]')) {
+    elements.adjustmentDialog.close();
+  }
+});
+elements.adjustmentDialog.addEventListener('click', (event) => {
+  if (event.target !== elements.adjustmentDialog) {
+    return;
+  }
+  const { left, right, top, bottom } = elements.adjustmentDialog.getBoundingClientRect();
+  if (event.clientX < left || event.clientX >= right
+    || event.clientY < top || event.clientY >= bottom) {
     elements.adjustmentDialog.close();
   }
 });
@@ -991,6 +1538,11 @@ elements.adjustmentForm.addEventListener('submit', (event) => {
 });
 
 window.utools?.onPluginEnter?.(() => {
+  const active = pruneExpiredAdjustments(state.adjustments, toLocalDateKey(new Date()));
+  if (active.length !== state.adjustments.length) {
+    state.adjustments = active;
+    persist();
+  }
   viewYear = new Date().getFullYear();
   viewMonth = new Date().getMonth() + 1;
   setView('calendar');
@@ -1006,3 +1558,7 @@ window.addEventListener('online', () => {
 
 setView('calendar');
 render();
+void loadBuiltInColorSchemes().catch((error) => {
+  console.error('内置配色读取失败', error);
+  showToast('内置配色读取失败', true);
+});
