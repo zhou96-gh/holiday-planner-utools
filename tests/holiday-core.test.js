@@ -6,9 +6,11 @@ import {
   calculateAdjustmentDays,
   classifyDay,
   getAdjustmentSummary,
+  getConsecutiveRestState,
   getMonthSummary,
   getWeekType,
   getYearLegalBreakdown,
+  hasAdjustmentOverlap,
   sanitizeAdjustmentRecords,
   sanitizeHolidays,
   sanitizeSettings,
@@ -52,6 +54,63 @@ test('周六周日可分别配置半天和重复间隔', () => {
   assert.equal(activeSaturday.periods.pm.category, 'regular-work');
   assert.equal(classifyDay('2026-09-26', customSettings, {}).restAmount, 0);
   assert.equal(classifyDay('2026-09-27', customSettings, {}).restAmount, 0.5);
+});
+
+test('连休只标识最终状态下连续三天及以上的全天休息', () => {
+  const doubleRestSettings = sanitizeSettings({
+    ...DEFAULT_SETTINGS,
+    weekendRules: {
+      5: { restPeriod: 'full', repeatIntervalWeeks: 0 },
+      6: { restPeriod: 'full', repeatIntervalWeeks: 0 }
+    }
+  });
+  assert.deepEqual(getConsecutiveRestState('2026-09-19', doubleRestSettings, {}), {
+    isConsecutive: false,
+    hasPrevious: false,
+    hasNext: false
+  });
+
+  const threeDayHolidays = {
+    '2026-09-18': { kind: 'legal', name: '测试假期' }
+  };
+  assert.deepEqual(getConsecutiveRestState('2026-09-18', doubleRestSettings, threeDayHolidays), {
+    isConsecutive: true,
+    hasPrevious: false,
+    hasNext: true
+  });
+  assert.deepEqual(getConsecutiveRestState('2026-09-19', doubleRestSettings, threeDayHolidays), {
+    isConsecutive: true,
+    hasPrevious: true,
+    hasNext: true
+  });
+  assert.deepEqual(getConsecutiveRestState('2026-09-20', doubleRestSettings, threeDayHolidays), {
+    isConsecutive: true,
+    hasPrevious: true,
+    hasNext: false
+  });
+  assert.deepEqual(getConsecutiveRestState('2026-09-27', settings, {}), {
+    isConsecutive: false,
+    hasPrevious: false,
+    hasNext: false
+  });
+
+  const manualWork = [{
+    type: 'work',
+    startDate: '2026-09-20',
+    startPeriod: 'am',
+    endDate: '2026-09-20',
+    endPeriod: 'pm'
+  }];
+  assert.deepEqual(getConsecutiveRestState(
+    '2026-09-19',
+    doubleRestSettings,
+    threeDayHolidays,
+    manualWork
+  ), {
+    isConsecutive: false,
+    hasPrevious: false,
+    hasNext: false
+  });
 });
 
 test('旧版大小休设置会迁移为周六周日独立规则', () => {
@@ -105,6 +164,7 @@ test('法定补班只作为标签且不覆盖原休息结果', () => {
 test('人工调休和补班覆盖日历最终半天结果', () => {
   const adjustments = [
     {
+      id: 'rest-pm',
       type: 'rest',
       startDate: '2026-09-14',
       startPeriod: 'pm',
@@ -112,6 +172,7 @@ test('人工调休和补班覆盖日历最终半天结果', () => {
       endPeriod: 'pm'
     },
     {
+      id: 'work-am',
       type: 'work',
       startDate: '2026-09-20',
       startPeriod: 'am',
@@ -122,11 +183,13 @@ test('人工调休和补班覆盖日历最终半天结果', () => {
   const weekday = classifyDay('2026-09-14', settings, {}, adjustments);
   assert.equal(weekday.periods.am.category, 'regular-work');
   assert.equal(weekday.periods.pm.category, 'manual-rest');
+  assert.equal(weekday.periods.pm.manualAdjustmentId, 'rest-pm');
   assert.equal(weekday.restAmount, 0.5);
 
   const weekend = classifyDay('2026-09-20', settings, {}, adjustments);
   assert.equal(weekend.periods.am.category, 'manual-work');
   assert.equal(weekend.periods.pm.category, 'schedule-rest');
+  assert.equal(weekend.periods.am.manualAdjustmentId, 'work-am');
   assert.equal(weekend.restAmount, 0.5);
 });
 
@@ -256,6 +319,57 @@ test('同一天支持上午或下午 0.5 天粒度并拒绝倒序范围', () => 
   record.startPeriod = 'pm';
   record.endPeriod = 'am';
   assert.equal(calculateAdjustmentDays(record, settings, {}), 0);
+});
+
+test('已调班的有效半天不允许重复调班且编辑时排除自身', () => {
+  const existing = [{
+    id: 'rest-1',
+    type: 'rest',
+    startDate: '2026-09-14',
+    startPeriod: 'am',
+    endDate: '2026-09-14',
+    endPeriod: 'am'
+  }];
+  assert.equal(hasAdjustmentOverlap({
+    id: '',
+    type: 'rest',
+    startDate: '2026-09-14',
+    startPeriod: 'am',
+    endDate: '2026-09-14',
+    endPeriod: 'pm'
+  }, existing, settings, {}), true);
+  assert.equal(hasAdjustmentOverlap({
+    id: '',
+    type: 'rest',
+    startDate: '2026-09-14',
+    startPeriod: 'pm',
+    endDate: '2026-09-14',
+    endPeriod: 'pm'
+  }, existing, settings, {}), false);
+  assert.equal(hasAdjustmentOverlap({
+    ...existing[0],
+    endPeriod: 'pm'
+  }, existing, settings, {}), false);
+});
+
+test('记录范围内未实际调班的时段仍可使用', () => {
+  const existing = [{
+    id: 'rest-1',
+    type: 'rest',
+    startDate: '2026-09-18',
+    startPeriod: 'pm',
+    endDate: '2026-09-20',
+    endPeriod: 'pm'
+  }];
+  const weekendWork = {
+    id: '',
+    type: 'work',
+    startDate: '2026-09-20',
+    startPeriod: 'am',
+    endDate: '2026-09-20',
+    endPeriod: 'am'
+  };
+  assert.equal(hasAdjustmentOverlap(weekendWork, existing, settings, {}), false);
 });
 
 test('调休和补班余额互相抵扣且最小为零', () => {

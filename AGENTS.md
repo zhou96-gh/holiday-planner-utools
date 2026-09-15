@@ -6,3 +6,4 @@
 - 离线安装包通过 `npm run build:offline` 生成到 `dist/holiday-planner-utools/`，不得直接打包项目根目录。
 - Windows 版 uTools 打包 WSL 项目时，必须先将生成目录复制到 Windows 本机路径，不直接使用 WSL UNC 路径。
 - 修改后至少运行 `npm test` 和 `npm run build:offline`，并通过浏览器验证入口页面可正常加载。
+- 修改数据持久化或导入导出时，保持 `src/holiday/storage.js` 为新格式编解码的单一来源，验证节假日区间单日修正后的无损往返及运行时按日期索引的结果。

@@ -1,21 +1,32 @@
 import { BUILT_IN_HOLIDAYS } from './holiday/data.js';
 import { fetchHolidayYear } from './holiday/fetch.js';
 import {
+  STORAGE_VERSION,
+  decodeState,
+  encodeState,
+  sanitizeLoadedYears
+} from './holiday/storage.js';
+import {
   DEFAULT_SETTINGS,
   buildMonthGrid,
   calculateAdjustmentDays,
   classifyDay,
   getAdjustmentSummary,
+  getConsecutiveRestState,
   getMonthSummary,
   getYearLegalBreakdown,
+  hasAdjustmentOverlap,
   sanitizeAdjustmentRecords,
-  sanitizeHolidays,
   sanitizeSettings,
   startOfWeek
 } from './holiday/core.js';
 
-const STORAGE_KEY = 'holiday-planner-state-v5';
-const LEGACY_STORAGE_KEYS = ['holiday-planner-state-v4', 'holiday-planner-state-v3'];
+const STORAGE_KEY = 'holiday-planner-state-v6';
+const LEGACY_STORAGE_KEYS = [
+  'holiday-planner-state-v5',
+  'holiday-planner-state-v4',
+  'holiday-planner-state-v3'
+];
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const LUNAR_DAY_LABELS = [
   '初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
@@ -119,10 +130,13 @@ function storageRead(key) {
   return raw ? JSON.parse(raw) : null;
 }
 
-function storageGet() {
-  return [STORAGE_KEY, ...LEGACY_STORAGE_KEYS]
-    .map((key) => storageRead(key))
-    .find((value) => value != null) ?? null;
+function storageRemove(key) {
+  if (window.utools?.dbStorage) {
+    window.utools.dbStorage.removeItem(key);
+    return;
+  }
+
+  localStorage.removeItem(key);
 }
 
 function storageSet(value) {
@@ -136,22 +150,18 @@ function storageSet(value) {
 
 function loadState() {
   try {
-    const saved = storageGet();
-    if ([3, 4, 5].includes(saved?.version)) {
-      return {
-        version: 5,
-        settings: sanitizeSettings(saved.settings),
-        holidays: sanitizeHolidays(saved.holidays),
-        loadedYears: sanitizeLoadedYears(saved.loadedYears ?? [2026]),
-        adjustments: sanitizeAdjustmentRecords(saved.adjustments)
-      };
+    const saved = storageRead(STORAGE_KEY);
+    if (saved) {
+      return decodeState(saved);
     }
   } catch (error) {
     console.warn('读取假期设置失败', error);
+  } finally {
+    LEGACY_STORAGE_KEYS.forEach(storageRemove);
   }
 
   return {
-    version: 5,
+    version: STORAGE_VERSION,
     settings: sanitizeSettings(DEFAULT_SETTINGS),
     holidays: cloneBuiltInHolidays(),
     loadedYears: [2026],
@@ -159,16 +169,8 @@ function loadState() {
   };
 }
 
-function sanitizeLoadedYears(years) {
-  if (!Array.isArray(years)) {
-    return [];
-  }
-
-  return [...new Set(years.filter((year) => Number.isInteger(year) && year >= 1900 && year <= 2200))].sort();
-}
-
 function persist() {
-  storageSet(state);
+  storageSet(encodeState(state));
 }
 
 function render() {
@@ -253,6 +255,12 @@ function renderCalendar() {
 
   buildMonthGrid(viewYear, viewMonth, state.settings.weekStartsOn).forEach((dateKey) => {
     const day = classifyDay(dateKey, state.settings, state.holidays, state.adjustments);
+    const consecutiveRest = getConsecutiveRestState(
+      dateKey,
+      state.settings,
+      state.holidays,
+      state.adjustments
+    );
     const visualCategory = day.visualCategory ?? day.category;
     const button = document.createElement('button');
     button.type = 'button';
@@ -261,12 +269,25 @@ function renderCalendar() {
     button.classList.toggle('official-holiday', day.officialLabels.some((label) => label.endsWith('放假')));
     button.classList.toggle('official-work', day.officialLabels.some((label) => label.endsWith('法定补班')));
     button.classList.toggle('partial-rest', day.restAmount === 0.5);
+    button.classList.toggle('consecutive-rest', consecutiveRest.isConsecutive);
+    button.classList.toggle(
+      'consecutive-rest-start',
+      consecutiveRest.isConsecutive && !consecutiveRest.hasPrevious
+    );
+    button.classList.toggle(
+      'consecutive-rest-end',
+      consecutiveRest.isConsecutive && !consecutiveRest.hasNext
+    );
     button.classList.toggle('outside-month', !dateKey.startsWith(currentMonthPrefix));
     button.classList.toggle('today', dateKey === todayKey);
     button.dataset.date = dateKey;
     const displayName = day.pureLegalAmount > 0 ? day.holiday?.name ?? '' : '';
     const lunarDate = formatLunarDate(dateKey);
-    button.setAttribute('aria-label', `${dateKey} 农历${lunarDate} ${displayName} ${getDayPeriodText(day)}`);
+    const consecutiveRestText = consecutiveRest.isConsecutive ? ' 连休' : '';
+    button.setAttribute(
+      'aria-label',
+      `${dateKey} 农历${lunarDate} ${displayName} ${getDayPeriodText(day)}${consecutiveRestText}`
+    );
 
     const top = document.createElement('span');
     top.className = 'day-top';
@@ -519,9 +540,12 @@ function getDefaultAdjustmentForDate(dateKey) {
   const adjustedPeriod = ['am', 'pm'].find((period) => day.periods[period].manualAdjustment);
   if (adjustedPeriod) {
     const type = day.periods[adjustedPeriod].manualAdjustment;
+    const recordId = day.periods[adjustedPeriod].manualAdjustmentId;
+    const record = state.adjustments.find((item) => item.id === recordId) ?? null;
     const matchingPeriods = ['am', 'pm'].filter((period) => day.periods[period].manualAdjustment === type);
     return {
       type,
+      record,
       periods: { start: matchingPeriods[0], end: matchingPeriods.at(-1) }
     };
   }
@@ -597,6 +621,12 @@ function updateAdjustmentPreview() {
     return;
   }
 
+  if (hasAdjustmentOverlap(record, state.adjustments, state.settings, state.holidays)) {
+    elements.adjustmentPreview.textContent = '所选范围包含已调班时段';
+    elements.adjustmentPreview.classList.add('invalid');
+    return;
+  }
+
   const days = calculateAdjustmentDays(record, state.settings, state.holidays);
   const rule = record.type === 'rest' ? '仅累计原本上班的时段' : '仅累计原本休息的时段';
   elements.adjustmentPreview.textContent = `${rule} · 本次 ${formatDays(days)} 天`;
@@ -605,8 +635,18 @@ function updateAdjustmentPreview() {
 
 function saveAdjustmentRecord() {
   const draft = getAdjustmentDraft();
+  if (!hasValidAdjustmentRange(draft)) {
+    showToast('所选范围内没有可记录的半天', true);
+    return false;
+  }
+
+  if (hasAdjustmentOverlap(draft, state.adjustments, state.settings, state.holidays)) {
+    showToast('所选范围包含已调班时段', true);
+    return false;
+  }
+
   const days = calculateAdjustmentDays(draft, state.settings, state.holidays);
-  if (!hasValidAdjustmentRange(draft) || days === 0) {
+  if (days === 0) {
     showToast('所选范围内没有可记录的半天', true);
     return false;
   }
@@ -694,7 +734,7 @@ function moveMonth(offset) {
 }
 
 function exportData() {
-  const content = JSON.stringify(state, null, 2);
+  const content = JSON.stringify(encodeState(state), null, 2);
   const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
@@ -707,17 +747,7 @@ function exportData() {
 async function importData(file) {
   try {
     const imported = JSON.parse(await file.text());
-    if (![3, 4, 5].includes(imported?.version)) {
-      throw new Error('不支持的数据版本');
-    }
-
-    state = {
-      version: 5,
-      settings: sanitizeSettings(imported.settings),
-      holidays: sanitizeHolidays(imported.holidays),
-      loadedYears: sanitizeLoadedYears(imported.loadedYears ?? [2026]),
-      adjustments: sanitizeAdjustmentRecords(imported.adjustments)
-    };
+    state = decodeState(imported);
     persist();
     render();
     showToast('数据已导入');
@@ -795,7 +825,7 @@ elements.calendarGrid.addEventListener('click', (event) => {
   const day = event.target.closest('.day-cell');
   if (day) {
     const defaults = getDefaultAdjustmentForDate(day.dataset.date);
-    openAdjustmentDialog(defaults.type, null, day.dataset.date, defaults.periods);
+    openAdjustmentDialog(defaults.type, defaults.record, day.dataset.date, defaults.periods);
   }
 });
 
@@ -942,11 +972,12 @@ elements.adjustmentType.addEventListener('click', (event) => {
   elements.adjustmentEndPeriod
 ].forEach((input) => input.addEventListener('change', updateAdjustmentPreview));
 elements.adjustmentNote.addEventListener('input', updateAdjustmentPreview);
-elements.adjustmentForm.addEventListener('submit', (event) => {
-  if (event.submitter?.value === 'cancel') {
-    return;
+elements.adjustmentForm.addEventListener('click', (event) => {
+  if (event.target.closest('[data-dialog-close]')) {
+    elements.adjustmentDialog.close();
   }
-
+});
+elements.adjustmentForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (selectedAdjustmentType === 'correction') {
     saveDateEdit();

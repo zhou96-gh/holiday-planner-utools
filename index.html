@@ -41,6 +41,7 @@
             <span><i class="legend-dot manual-work-dot"></i>补班</span>
             <span><i class="legend-dot suggestion-dot"></i>法定调休</span>
             <span><i class="legend-dot work-dot"></i>法定补班</span>
+            <span><i class="legend-border"></i>连休</span>
           </div>
           <div class="calendar-stage">
             <button id="calendar-prev-month" class="calendar-side-button" type="button" title="上个月" aria-label="日历上个月">‹</button>
@@ -143,7 +144,7 @@
       <form method="dialog" id="adjustment-form">
         <div class="dialog-heading">
           <div><span class="eyebrow">调班与修正</span><h2 id="adjustment-dialog-title">发起调休</h2></div>
-          <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
+          <button class="icon-button" type="button" data-dialog-close title="关闭" aria-label="关闭">×</button>
         </div>
         <span class="field-label">类型</span>
         <div id="adjustment-type" class="segmented-control adjustment-type-control">
@@ -195,7 +196,7 @@
           <div id="date-preview" class="date-preview"></div>
         </div>
         <div class="dialog-actions">
-          <button class="secondary-button" value="cancel" type="submit">取消</button>
+          <button class="secondary-button" type="button" data-dialog-close>取消</button>
           <button id="save-adjustment" class="primary-button" value="default" type="submit">保存</button>
         </div>
       </form>

@@ -132,17 +132,13 @@ export function calculateAdjustmentDays(record, settings, holidays) {
   let total = 0;
   let dateKey = record.startDate;
   while (dateKey <= record.endDate) {
-    const periods = ['am', 'pm'].filter((period) => {
-      if (dateKey === record.startDate && period === 'am' && record.startPeriod === 'pm') {
-        return false;
-      }
-      if (dateKey === record.endDate && period === 'pm' && record.endPeriod === 'am') {
-        return false;
-      }
-
-      const isRestPeriod = isActualRestPeriod(dateKey, period, settings, holidays);
-      return record.type === 'rest' ? !isRestPeriod : isRestPeriod;
-    });
+    const periods = ['am', 'pm'].filter((period) => isApplicableAdjustmentPeriod(
+      record,
+      dateKey,
+      period,
+      settings,
+      holidays
+    ));
     total += periods.length / 2;
     dateKey = addDays(dateKey, 1);
   }
@@ -158,6 +154,46 @@ function isActualRestPeriod(dateKey, period, settings, holidays) {
   const hasPureLegalPeriod = Object.values(sourcePeriods).some((item) => item.category === 'pure-legal');
   const sourcePeriod = sourcePeriods[period];
   return sourcePeriod.category === 'pure-legal' || (!hasPureLegalPeriod && sourcePeriod.baseRest);
+}
+
+function isApplicableAdjustmentPeriod(record, dateKey, period, settings, holidays) {
+  if (!includesAdjustmentPeriod(record, dateKey, period)) {
+    return false;
+  }
+
+  const isRestPeriod = isActualRestPeriod(dateKey, period, settings, holidays);
+  return record.type === 'rest' ? !isRestPeriod : isRestPeriod;
+}
+
+export function hasAdjustmentOverlap(record, records, settings, holidays) {
+  const halfDays = getRangeHalfDays(
+    record?.startDate,
+    record?.startPeriod,
+    record?.endDate,
+    record?.endPeriod
+  );
+  if (halfDays === 0 || !Array.isArray(records)) {
+    return false;
+  }
+
+  let dateKey = record.startDate;
+  while (dateKey <= record.endDate) {
+    const hasConflict = ['am', 'pm'].some((period) => {
+      if (!isApplicableAdjustmentPeriod(record, dateKey, period, settings, holidays)) {
+        return false;
+      }
+
+      return records.some((existing) => existing.id !== record.id
+        && isApplicableAdjustmentPeriod(existing, dateKey, period, settings, holidays));
+    });
+    if (hasConflict) {
+      return true;
+    }
+
+    dateKey = addDays(dateKey, 1);
+  }
+
+  return false;
 }
 
 export function sanitizeAdjustmentRecords(input) {
@@ -235,7 +271,8 @@ function resolvePeriodResult(sourcePeriod, adjustmentRecords, hasPureLegalPeriod
     category,
     visualCategory: category,
     isRest,
-    manualAdjustment: null
+    manualAdjustment: null,
+    manualAdjustmentId: null
   };
   const record = Array.isArray(adjustmentRecords)
     ? adjustmentRecords.find((item) => includesAdjustmentPeriod(item, sourcePeriod.dateKey, sourcePeriod.period)
@@ -252,7 +289,8 @@ function resolvePeriodResult(sourcePeriod, adjustmentRecords, hasPureLegalPeriod
     isRest: manualIsRest,
     category: resolvedCategory,
     visualCategory: resolvedCategory,
-    manualAdjustment: record.type
+    manualAdjustment: record.type,
+    manualAdjustmentId: record.id
   };
 }
 
@@ -432,6 +470,29 @@ export function classifyDay(dateKey, settings, holidays, adjustmentRecords = [])
     visualCategory: category,
     manualAdjustment,
     officialLabels
+  };
+}
+
+export function getConsecutiveRestState(dateKey, settings, holidays, adjustmentRecords = []) {
+  const currentDay = classifyDay(dateKey, settings, holidays, adjustmentRecords);
+  if (currentDay.restAmount !== 1) {
+    return { isConsecutive: false, hasPrevious: false, hasNext: false };
+  }
+
+  const adjacentRest = [-2, -1, 1, 2].map((offset) => classifyDay(
+    addDays(dateKey, offset),
+    settings,
+    holidays,
+    adjustmentRecords
+  ).restAmount === 1);
+  const [twoDaysBefore, previousDay, nextDay, twoDaysAfter] = adjacentRest;
+  const isConsecutive = (previousDay && (twoDaysBefore || nextDay))
+    || (nextDay && twoDaysAfter);
+
+  return {
+    isConsecutive,
+    hasPrevious: isConsecutive && previousDay,
+    hasNext: isConsecutive && nextDay
   };
 }
 
