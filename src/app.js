@@ -135,6 +135,7 @@ const elements = {
   summaryBand: document.querySelector('#summary-band'),
   settingsToggle: document.querySelector('#settings-toggle'),
   settingsBack: document.querySelector('#settings-back'),
+  settingsFloatingBack: document.querySelector('#settings-floating-back'),
   calendarGrid: document.querySelector('#calendar-grid'),
   weekdayHeader: document.querySelector('#weekday-header'),
   weekStartsOn: document.querySelector('#week-starts-on'),
@@ -333,6 +334,7 @@ function setView(view) {
   elements.summaryBand.hidden = isSettings;
   elements.calendarNavigation.hidden = isSettings;
   elements.settingsView.hidden = !isSettings;
+  elements.settingsFloatingBack.hidden = true;
 }
 
 function renderColorPreview() {
@@ -442,6 +444,7 @@ function renderCalendar() {
     button.type = 'button';
     button.className = `day-cell ${visualCategory}`;
     button.classList.toggle('has-adjustment', Boolean(day.manualAdjustment));
+    button.classList.toggle('has-official-label', day.officialLabels.length > 0);
     button.classList.toggle('official-holiday', day.officialLabels.some((label) => label.endsWith('放假')));
     button.classList.toggle('official-work', day.officialLabels.some((label) => label.endsWith('法定补班')));
     button.classList.toggle('partial-rest', day.restAmount === 0.5);
@@ -477,8 +480,11 @@ function renderCalendar() {
     const lunar = document.createElement('small');
     lunar.className = 'day-lunar';
     lunar.textContent = lunarDate;
-    dateLabels.append(number, lunar);
-    top.append(dateLabels);
+    const name = document.createElement('span');
+    name.className = 'day-name';
+    name.textContent = displayName;
+    dateLabels.append(name, lunar);
+    top.append(number, dateLabels);
 
     const tags = document.createElement('span');
     tags.className = 'day-tags';
@@ -495,9 +501,6 @@ function renderCalendar() {
       top.append(tags);
     }
 
-    const name = document.createElement('span');
-    name.className = 'day-name';
-    name.textContent = displayName;
     const status = document.createElement('span');
     status.className = 'day-period-status';
     const periodItems = canMergeDayPeriods(day)
@@ -509,7 +512,7 @@ function renderCalendar() {
       item.textContent = `${periodLabel} ${CATEGORY_LABELS[category]}`;
       status.append(item);
     });
-    button.append(top, name, status);
+    button.append(top, status);
     elements.calendarGrid.append(button);
   });
 }
@@ -1146,10 +1149,19 @@ elements.settingsToggle.addEventListener('click', () => {
   setView('settings');
   elements.settingsBack.focus();
 });
-elements.settingsBack.addEventListener('click', () => {
+
+function returnToCalendar() {
   setView('calendar');
   elements.settingsToggle.focus();
+}
+
+elements.settingsBack.addEventListener('click', returnToCalendar);
+elements.settingsFloatingBack.addEventListener('click', returnToCalendar);
+
+const settingsBackObserver = new IntersectionObserver(([entry]) => {
+  elements.settingsFloatingBack.hidden = elements.settingsView.hidden || entry.isIntersecting;
 });
+settingsBackObserver.observe(elements.settingsBack);
 
 elements.calendarGrid.addEventListener('click', (event) => {
   const day = event.target.closest('.day-cell');

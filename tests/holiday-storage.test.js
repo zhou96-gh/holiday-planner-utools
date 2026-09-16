@@ -113,25 +113,87 @@ test('不需要关联时只编辑当前日期类型，已有另一类日期独�
   assert.ok(app.includes('getAdjustmentRanges(existing).filter((range) => range.type !== activeAdjustmentRangeType)'));
 });
 
-test('日历无顶栏，设置齿轮悬浮且设置页可返回日历', () => {
+test('日历无顶栏，设置齿轮悬浮且设置页下拉后可悬浮返回日历', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /class="app-header"/);
   assert.match(html, /id="settings-toggle" class="settings-fab"/);
   assert.match(html, /id="settings-back" class="secondary-button"/);
+  assert.match(html, /id="settings-floating-back" class="settings-back-fab"/);
   assert.doesNotMatch(html, /偏好设置/);
   assert.ok(css.includes('.settings-fab {'));
+  assert.ok(css.includes('.settings-back-fab {'));
   assert.ok(css.includes('position: fixed;'));
-  assert.ok(app.includes('settingsBack.addEventListener'));
+  assert.ok(app.includes("settingsBack.addEventListener('click', returnToCalendar)"));
+  assert.ok(app.includes("settingsFloatingBack.addEventListener('click', returnToCalendar)"));
+  assert.ok(app.includes('new IntersectionObserver'));
 });
 
-test('日历网格和普通日期格没有专用底色，状态格仍保留分类底色', () => {
+test('周末自定义支持上班并在输入框后显示间隔单位', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
-  assert.ok(css.includes('.calendar-grid {\n  border-top: 1px solid var(--border-strong);\n  border-left: 1px solid var(--border-strong);\n  background: transparent;'));
-  assert.ok(css.includes('.day-cell {\n  --day-cell-background: transparent;'));
+  assert.equal(html.match(/data-value="none">上班/g)?.length, 2);
+  assert.equal(html.match(/<label class="repeat-field"><input class="weekend-repeat-interval"[^>]+\/><span>间隔（周）<\/span><\/label>/g)?.length, 2);
+  assert.ok(css.includes('.weekend-period-control { grid-template-columns: repeat(4, 1fr); padding: 2px; }'));
+  assert.ok(css.includes('grid-template-columns: 28px minmax(88px, 1fr) minmax(80px, 112px);'));
+  assert.ok(css.includes('.repeat-field input { min-width: 32px; height: 30px; padding: 0 4px; flex: 1 1 56px; }'));
+  assert.ok(!css.includes('.repeat-field { grid-column: 2; }'));
+});
+
+test('全局和日期格使用无边框岛屿布局、日历外壳内边距和右上角旗帜图片标签', () => {
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const tagTexture = readFileSync(new URL('../assets/tag-ribbon-texture.png', import.meta.url));
+  assert.ok(css.includes('grid-template-rows: minmax(0, 1fr) auto;\n  gap: 12px;\n  padding: 12px;'));
+  assert.ok(css.includes('.calendar-panel, .adjustment-panel, .result-panel {\n  border: 0;\n  border-radius: 10px;'));
+  assert.ok(css.includes('.calendar-board {\n  min-width: 0;\n  padding: 10px;\n  overflow-x: auto;\n  border: 0;\n  border-radius: 10px;'));
+  assert.ok(css.includes('.calendar-grid {\n  gap: 10px;\n  border: 0;\n  background: transparent;'));
+  assert.ok(css.includes('.day-cell {\n  --day-cell-background: var(--surface);'));
+  assert.ok(css.includes('gap: 5px;\n  border: 0;\n  border-radius: 10px;'));
+  assert.ok(css.includes('min-height: 0;\n  aspect-ratio: 1;'));
+  assert.ok(css.includes('box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 12%, transparent);'));
+  assert.ok(css.includes('.summary-item {') && css.includes('border-right: 0;'));
+  assert.ok(css.includes('.calendar-today-button {') && css.includes('border: 0;'));
+  assert.ok(css.includes('.holiday-row {') && css.includes('.holiday-row:hover { background: var(--hover); }'));
+  assert.ok(css.includes('.adjustment-row {') && css.includes('.adjustment-row.work { background: color-mix'));
+  assert.ok(css.includes('.settings-view {\n  flex: 1;\n  padding: 12px;\n  overflow: visible;\n  background: var(--page);'));
+  assert.ok(css.includes('width: min(1120px, 100%);\n  margin: 0 auto;'));
+  assert.ok(css.includes('grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) minmax(120px, 180px);'));
+  assert.ok(css.includes('.settings-content { grid-template-columns: 120px minmax(0, 1fr) 120px; }'));
+  assert.ok(css.includes('.settings-panel { grid-column: 2; min-width: 0; display: grid; gap: 12px; }'));
+  assert.ok(css.includes('.settings-toc, .settings-panel { grid-column: 1; }'));
+  assert.ok(css.includes('.settings-group {\n  min-width: 0;\n  padding: 28px;\n  border: 0;\n  border-radius: 10px;'));
+  assert.ok(css.includes('grid-template-columns: minmax(0, 1fr);\n  grid-template-rows: minmax(0, 1fr);\n  align-items: stretch;'));
+  assert.ok(css.includes('.day-cell.has-official-label .day-top {\n  padding-top: 0;\n  padding-right: 0;'));
+  assert.ok(css.includes('.day-number {\n  position: absolute;\n  top: 50%;\n  left: 0;\n  z-index: 1;'));
+  assert.ok(css.includes('text-align: center;\n  transform: translateY(-50%);'));
+  assert.ok(css.includes('.day-date-labels {\n  position: relative;\n  z-index: 1;\n  grid-column: 1;\n  grid-row: 1;'));
+  assert.ok(css.includes('align-self: start;\n  justify-self: start;'));
+  assert.ok(css.includes('flex-direction: column;\n  align-items: flex-start;\n  justify-content: flex-start;\n  gap: 2px;'));
+  assert.ok(css.includes('font-size: 18px;\n  line-height: 1;'));
+  assert.ok(css.includes('.day-name {\n  min-width: 0;\n  color: var(--text);'));
+  assert.ok(!css.includes('.day-name:not(:empty)::after'));
+  assert.ok(app.includes('dateLabels.append(name, lunar);\n    top.append(number, dateLabels);'));
+  assert.ok(app.includes('button.append(top, status);'));
+  assert.ok(css.includes('background-image: url("../assets/tag-ribbon-texture.png");'));
+  assert.ok(css.includes('.day-tags {\n  position: absolute;\n  top: 3px;\n  right: 1px;'));
   assert.ok(css.includes('.day-cell.schedule-rest { --day-cell-background: var(--rest-bg); }'));
+  assert.ok(css.includes('.day-cell.regular-work { --day-cell-background: transparent; }'));
+  assert.ok(css.includes('.day-cell.consecutive-rest .day-period-status { margin-bottom: 5px; }'));
   assert.ok(css.includes('.day-cell.manual-work { --day-cell-background: var(--manual-work-bg); }'));
+  assert.ok(app.includes("button.classList.toggle('has-official-label', day.officialLabels.length > 0);"));
+  assert.ok(css.includes('.weekday-header, .calendar-grid { min-width: 0; }'));
+  assert.ok(css.includes('.calendar-board { grid-column: 1 / -1; grid-row: 2; padding: 4px; }'));
+  assert.ok(css.includes('.calendar-grid { gap: 4px; }'));
+  assert.ok(css.includes('.day-cell { padding: 4px; gap: 3px; border-radius: 7px; }'));
+  assert.ok(!css.includes('.day-cell { min-height: 84px;'));
+  assert.ok(css.includes('grid-template-columns: repeat(7, minmax(64px, 96px));\n  justify-content: safe center;'));
+  assert.ok(!css.includes('.day-number { font-size: 12px; }'));
+  assert.ok(!css.includes('.period-status-item { font-size: 0; }'));
+  assert.ok(!css.includes('.summary-item strong { font-size: 24px; }'));
+  assert.ok(!css.includes('.summary-item strong { font-size: 20px; }'));
+  assert.deepEqual([...tagTexture.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 });
 
 test('编辑弹窗外点击关闭，内部保持紧凑布局', () => {

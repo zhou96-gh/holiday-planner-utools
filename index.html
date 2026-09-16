@@ -323,8 +323,9 @@
                     <button type="button" data-value="full">全天</button>
                     <button type="button" data-value="am">上午</button>
                     <button type="button" data-value="pm">下午</button>
+                    <button type="button" data-value="none">上班</button>
                   </div>
-                  <label class="repeat-field">间隔（周）<input class="weekend-repeat-interval" type="number" min="0" max="52" step="1" value="0" /></label>
+                  <label class="repeat-field"><input class="weekend-repeat-interval" type="number" min="0" max="52" step="1" value="0" /><span>间隔（周）</span></label>
                 </div>
                 <div class="weekend-period-row" data-weekend-day="6">
                   <span>周日</span>
@@ -332,8 +333,9 @@
                     <button type="button" data-value="full">全天</button>
                     <button type="button" data-value="am">上午</button>
                     <button type="button" data-value="pm">下午</button>
+                    <button type="button" data-value="none">上班</button>
                   </div>
-                  <label class="repeat-field">间隔（周）<input class="weekend-repeat-interval" type="number" min="0" max="52" step="1" value="0" /></label>
+                  <label class="repeat-field"><input class="weekend-repeat-interval" type="number" min="0" max="52" step="1" value="0" /><span>间隔（周）</span></label>
                 </div>
               </fieldset>
             </section>
@@ -391,6 +393,7 @@
             </section>
           </div>
         </div>
+        <button id="settings-floating-back" class="settings-back-fab" type="button" title="返回日历" aria-label="返回日历" hidden>&larr;</button>
       </main>
     </div>
 
