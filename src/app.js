@@ -433,6 +433,7 @@ function renderCalendar() {
 
   buildMonthGrid(viewYear, viewMonth, state.settings.weekStartsOn).forEach((dateKey) => {
     const day = classifyDay(dateKey, state.settings, state.holidays, state.adjustments);
+    const visibleOfficialLabels = day.officialLabels.filter((label) => label === '放假');
     const consecutiveRest = getConsecutiveRestState(
       dateKey,
       state.settings,
@@ -444,7 +445,7 @@ function renderCalendar() {
     button.type = 'button';
     button.className = `day-cell ${visualCategory}`;
     button.classList.toggle('has-adjustment', Boolean(day.manualAdjustment));
-    button.classList.toggle('has-official-label', day.officialLabels.length > 0);
+    button.classList.toggle('has-official-label', visibleOfficialLabels.length > 0);
     button.classList.toggle('official-holiday', day.officialLabels.some((label) => label.endsWith('放假')));
     button.classList.toggle('official-work', day.officialLabels.some((label) => label.endsWith('法定补班')));
     button.classList.toggle('partial-rest', day.restAmount === 0.5);
@@ -489,10 +490,9 @@ function renderCalendar() {
     const tags = document.createElement('span');
     tags.className = 'day-tags';
 
-    day.officialLabels.forEach((label) => {
+    visibleOfficialLabels.forEach((label) => {
       const officialTag = document.createElement('small');
-      const tagType = label === '放假' ? 'holiday' : label === '法定调休' ? 'suggestion' : 'work';
-      officialTag.className = `official-tag ${tagType}`;
+      officialTag.className = 'official-tag holiday';
       officialTag.textContent = label;
       tags.append(officialTag);
     });
